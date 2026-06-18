@@ -1,0 +1,172 @@
+@import "tailwindcss";
+
+/* =========================================================================
+   Padel Racket Finder — Design tokens
+   DA : slate sombre premium · accent volt #C6F24E · data cyan #38BDF8
+   Typo : Barlow Condensed (display) · Barlow (corps) · JetBrains Mono (specs)
+   ========================================================================= */
+
+:root {
+  color-scheme: dark;
+
+  /* Surfaces */
+  --bg: #0a0e18;
+  --bg-elevated: #0f1422;
+  --surface: #121a2a;
+  --surface-2: #1a2435;
+  --surface-3: #222e44;
+
+  /* Borders */
+  --border: rgba(255, 255, 255, 0.08);
+  --border-strong: rgba(255, 255, 255, 0.16);
+
+  /* Text */
+  --fg: #f7fafc;
+  --muted: #9fb0c3;
+  --muted-2: #64748b;
+
+  /* Brand accents */
+  --volt: #c6f24e;
+  --volt-strong: #b6e63a;
+  --volt-foreground: #0a0e18;
+  --cyan: #38bdf8;
+  --cyan-foreground: #04293c;
+
+  /* Semantic / status */
+  --success: #34d399;
+  --warning: #fbbf24;
+  --danger: #f87171;
+
+  /* Provenance des données */
+  --provenance-official: #38bdf8; /* cyan : officiel fabricant */
+  --provenance-estimated: #c6f24e; /* volt : estimation experte */
+  --provenance-reseller: #c084fc; /* violet : revendeur */
+  --provenance-unknown: #64748b; /* gris : non communiqué */
+
+  --radius: 0.875rem;
+}
+
+@theme inline {
+  /* Couleurs (génèrent bg-*, text-*, border-*) */
+  --color-bg: var(--bg);
+  --color-bg-elevated: var(--bg-elevated);
+  --color-surface: var(--surface);
+  --color-surface-2: var(--surface-2);
+  --color-surface-3: var(--surface-3);
+
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+
+  --color-fg: var(--fg);
+  --color-muted: var(--muted);
+  --color-muted-2: var(--muted-2);
+
+  --color-volt: var(--volt);
+  --color-volt-strong: var(--volt-strong);
+  --color-volt-foreground: var(--volt-foreground);
+  --color-cyan: var(--cyan);
+  --color-cyan-foreground: var(--cyan-foreground);
+
+  --color-success: var(--success);
+  --color-warning: var(--warning);
+  --color-danger: var(--danger);
+
+  --color-provenance-official: var(--provenance-official);
+  --color-provenance-estimated: var(--provenance-estimated);
+  --color-provenance-reseller: var(--provenance-reseller);
+  --color-provenance-unknown: var(--provenance-unknown);
+
+  /* compat tokens par défaut */
+  --color-background: var(--bg);
+  --color-foreground: var(--fg);
+
+  /* Typographie */
+  --font-display: var(--font-barlow-condensed);
+  --font-sans: var(--font-barlow);
+  --font-mono: var(--font-jetbrains-mono);
+
+  /* Rayons */
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 6px);
+}
+
+* {
+  border-color: var(--border);
+}
+
+html {
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  background-color: var(--bg);
+  color: var(--fg);
+  font-family: var(--font-sans), system-ui, sans-serif;
+  font-feature-settings: "ss01", "cv01";
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+}
+
+/* Chiffres tabulaires pour specs / notes / prix */
+.tabular-nums {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Titres : Barlow Condensed */
+.font-display {
+  font-family: var(--font-display), var(--font-sans), sans-serif;
+  letter-spacing: -0.01em;
+}
+
+/* Carte verre dépoli */
+.glass {
+  background: linear-gradient(
+    180deg,
+    rgba(255, 255, 255, 0.04),
+    rgba(255, 255, 255, 0.015)
+  );
+  backdrop-filter: blur(14px);
+  -webkit-backdrop-filter: blur(14px);
+  border: 1px solid var(--border);
+}
+
+.glow-volt {
+  box-shadow: 0 0 0 1px var(--border), 0 20px 60px -20px rgba(198, 242, 78, 0.18);
+}
+
+/* Scrollbar discrète */
+::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+::-webkit-scrollbar-thumb {
+  background: var(--surface-3);
+  border-radius: 999px;
+  border: 2px solid var(--bg);
+}
+::-webkit-scrollbar-thumb:hover {
+  background: var(--border-strong);
+}
+
+::selection {
+  background: rgba(198, 242, 78, 0.25);
+  color: var(--fg);
+}
+
+:focus-visible {
+  outline: 2px solid var(--volt);
+  outline-offset: 2px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
+    scroll-behavior: auto !important;
+  }
+}
