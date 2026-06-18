@@ -1,4 +1,3 @@
-/* eslint-disable no-console */
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { resolve } from "node:path";
 import Papa from "papaparse";
