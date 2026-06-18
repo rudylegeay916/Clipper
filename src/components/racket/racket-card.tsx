@@ -9,6 +9,7 @@ import {
 } from "@/data/criteria";
 import { formatPrice, cn } from "@/lib/utils";
 import { DataProvenanceBadge } from "@/components/shared/data-provenance-badge";
+import { RacketImage } from "./racket-image";
 
 function poidsShort(racket: Racket): string {
   const { poidsMin, poidsMax } = racket.specs;
@@ -65,6 +66,10 @@ export function RacketCard({
           <span className="font-display text-lg font-bold tabular-nums">{scoreGlobal}</span>
         </div>
       )}
+
+      <div className="-mx-5 -mt-5 mb-4">
+        <RacketImage racket={racket} rounded="rounded-t-2xl" aspectClass="h-40" />
+      </div>
 
       <div className="flex items-start justify-between gap-3">
         <div>

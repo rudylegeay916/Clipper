@@ -14,6 +14,7 @@ import {
   niveauSchema,
   dataConfidenceSchema,
   commercialStatusSchema,
+  sourceTypeSchema,
   type RacketInput,
   type SourceRef,
 } from "../src/types/racket";
@@ -57,7 +58,18 @@ function rowToInput(row: Record<string, string>, index: number): RacketInput {
     if (!empty(row.reseller_url)) sourceUrls.push({ type: "reseller", url: row.reseller_url.trim() });
     if (!empty(row.review_url)) sourceUrls.push({ type: "review", url: row.review_url.trim() });
 
+    // Image : seulement si une URL est fournie (jamais inventée). Sinon → fallback.
+    const image = empty(row.image_url)
+      ? null
+      : {
+          url: row.image_url.trim(),
+          alt: str(row.image_alt) ?? `${str(row.marque) ?? ""} ${str(row.modele) ?? ""}`.trim(),
+          source: empty(row.image_source) ? ("official" as const) : sourceTypeSchema.parse(row.image_source.trim()),
+          ...(empty(row.image_credit) ? {} : { credit: row.image_credit.trim() }),
+        };
+
     return {
+      image,
       id,
       slug: str(row.slug) ?? id,
       marque: str(row.marque) ?? "",

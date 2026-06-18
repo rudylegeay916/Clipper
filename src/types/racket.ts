@@ -73,6 +73,15 @@ export const sourceRefSchema = z.object({
 });
 export type SourceRef = z.infer<typeof sourceRefSchema>;
 
+/** Image produit : URL + texte alternatif + provenance. */
+export const racketImageSchema = z.object({
+  url: z.string().url(),
+  alt: z.string(),
+  source: sourceTypeSchema,
+  credit: z.string().optional(),
+});
+export type RacketImage = z.infer<typeof racketImageSchema>;
+
 /* =========================================================================
    Specs objectives — FAITS sourcés uniquement (null = non communiqué)
    ========================================================================= */
@@ -147,6 +156,9 @@ export const racketSchema = z.object({
   pointsForts: z.array(z.string()).default([]),
   pointsFaibles: z.array(z.string()).default([]),
 
+  // Visuel (null → fallback branded). Image jamais inventée : source explicite.
+  image: racketImageSchema.nullable().default(null),
+
   // Traçabilité
   sourceUrls: z.array(sourceRefSchema).default([]),
   lastVerifiedAt: z.string().nullable().default(null), // ISO date
@@ -164,9 +176,11 @@ export type Racket = z.infer<typeof racketSchema>;
 
 export type RacketInput = Omit<
   Racket,
-  "estimatedScores" | "analysisVersion" | "analysisSource"
+  "estimatedScores" | "analysisVersion" | "analysisSource" | "image"
 > & {
   /** Override optionnel si la marque publie réellement des notes. */
   estimatedScores?: EstimatedScores;
   analysisSource?: AnalysisSource;
+  /** Image produit (null/absente → fallback branded). */
+  image?: RacketImage | null;
 };

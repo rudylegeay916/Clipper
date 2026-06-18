@@ -11,6 +11,7 @@ import {
   COMMERCIAL_STATUS_LABEL,
 } from "@/data/criteria";
 import { formatPrice } from "@/lib/utils";
+import { RacketImage } from "@/components/racket/racket-image";
 import { TechnicalSpecCard } from "@/components/racket/technical-spec-card";
 import { ScoreEstimationExplainer } from "@/components/racket/score-estimation-explainer";
 import { RacketRadarChart } from "@/components/racket/racket-radar-chart";
@@ -136,6 +137,11 @@ export default async function RacketDetailPage({
         </div>
 
         <div className="space-y-6">
+          <RacketImage racket={racket} aspectClass="aspect-[16/10]" className="border border-border" />
+          {racket.image?.credit && (
+            <p className="-mt-4 text-right text-xs text-muted-2">Image : {racket.image.credit}</p>
+          )}
+
           <Card glass>
             <CardBody>
               <p className="font-display text-lg font-semibold">Profil de jeu</p>

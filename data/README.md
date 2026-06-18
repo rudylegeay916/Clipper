@@ -50,4 +50,8 @@ commercialisées. Le principe est strict :
 - `commercial_status` : `available` · `discontinued` · `preorder` · `unknown`
 - **Sources** : renseigner au moins une URL parmi `official_url`, `reseller_url`,
   `review_url`. La politique est : officiel d'abord, revendeur sérieux en secours.
+- **Image** (optionnelle) : `image_url` (URL directe d'une vraie image, jamais
+  inventée), `image_alt` (texte alternatif), `image_source` (`official` /
+  `reseller` / `review`), `image_credit` (libellé crédit). Si `image_url` est
+  vide, l'app affiche un **visuel de repli branded** (dégradé + marque + modèle).
 - `last_verified_at` : date de vérification au format `AAAA-MM-JJ`.

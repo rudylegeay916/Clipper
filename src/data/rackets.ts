@@ -18,6 +18,7 @@ export const rackets: Racket[] = allInputs.map((input) => {
     ...input,
     pointsForts: input.pointsForts ?? [],
     pointsFaibles: input.pointsFaibles ?? [],
+    image: input.image ?? null,
     estimatedScores: input.estimatedScores ?? estimateScores(input.specs),
     analysisSource: input.analysisSource ?? "expert_estimation",
     analysisVersion: ESTIMATION_VERSION,
