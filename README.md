@@ -150,6 +150,23 @@ Résultat : `output/<nom_video>/transcript.json` (segments + mots horodatés + c
 
 > **Premier lancement** : le modèle Whisper est téléchargé (~500 Mo pour `small`) puis mis en cache — les lancements suivants sont entièrement hors ligne. Modèle réglable dans `config.yaml` (`transcription.model` : `tiny`/`base`/`small`/`medium`/`large-v3` — plus gros = plus précis mais plus lent).
 
+### Analyser silences et points de coupe sûrs (Phase 4)
+
+Détecte les silences, croise avec le transcript, et produit la liste des timestamps où couper sans casser un mot ni une phrase :
+
+```powershell
+# À lancer après la transcription (sinon : silences seuls, moins précis)
+python -m src.detection.analyze input/podcast.mp4
+
+# Avec détection de changements de scène (plus lent : décode toute la vidéo)
+python -m src.detection.analyze input/podcast.mp4 --scenes
+
+# Refaire l'analyse
+python -m src.detection.analyze input/podcast.mp4 --force
+```
+
+Résultat : `output/<nom_video>/analysis.json` (silences, scènes éventuelles, points de coupe sûrs typés `sentence_end` / `silence` / `phrase_gap`). Seuils réglables dans `config.yaml` (`silence_detection`, `scene_detection`, `cut_points`).
+
 ### Générer une vidéo de test
 
 Pas de vidéo sous la main ? Générez-en une (mire animée + bip audio) :
@@ -210,7 +227,7 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 | 2 | Ingestion vidéo (fichier local / URL) | ✅ Fait |
 | 2 bis | Preview HTML (lecteur + miniatures + proxy navigateur) | ✅ Fait |
 | 3 | Transcription (faster-whisper, mot par mot) | ✅ Fait |
-| 4 | Détection silences + points de coupe sûrs | À venir |
+| 4 | Détection silences + points de coupe sûrs | ✅ Fait |
 | 5 | Scoring des moments forts | À venir |
 | 6 | Découpage automatique | À venir |
 | 7 | Reframe vertical intelligent | À venir |

@@ -59,6 +59,19 @@ silence_detection:
   noise_threshold_db: -35        # Volume (dB) en dessous duquel on considere un silence
   min_silence_duration: 0.35     # Duree minimale (secondes) pour compter comme une pause
 
+# --- Phase 4 : detection de changements de scene (optionnelle) ---
+# Utile si la source a plusieurs cameras ou changements de contexte.
+# Desactivee par defaut : elle decode toute la video (lent sur un long
+# stream). Activable ici ou ponctuellement avec --scenes en CLI.
+scene_detection:
+  enabled: false
+  threshold: 0.4                 # Sensibilite 0-1 (plus bas = plus de scenes detectees)
+
+# --- Phase 4 : points de coupe surs ---
+cut_points:
+  word_margin: 0.08              # Marge minimale (s) entre un point de coupe et un mot
+  min_spacing: 1.0               # Distance minimale (s) entre deux points de coupe
+
 # --- Phases 5-6 : clips candidats et decoupage ---
 clips:
   min_duration: 15          # Duree minimale d'un clip (secondes)
