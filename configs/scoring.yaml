@@ -1,0 +1,47 @@
+# ============================================================
+# Phase 5 - Ponderation du scoring des moments forts
+# ============================================================
+# Le score final d'un segment (0-100) est une somme ponderee
+# de trois familles de signaux. Ajuster les poids ici sans
+# toucher au code. La somme des poids de famille doit faire 1.0.
+# ============================================================
+
+# --- Poids des familles de signaux ---
+weights:
+  text: 0.45      # Signaux textuels (transcription)
+  audio: 0.35     # Signaux audio (volume, rythme, rires)
+  structure: 0.20 # Signaux de structure (densite, duree)
+
+# --- Signaux textuels ---
+text_signals:
+  # Mots a forte charge emotionnelle (score bonus si presents)
+  emotional_keywords:
+    fr: [incroyable, fou, dingue, jamais, toujours, secret, erreur, danger,
+         gratuit, argent, choc, enorme, honte, verite, mensonge, peur, gagner, perdre]
+    en: [insane, crazy, never, always, secret, mistake, danger,
+         free, money, shocking, huge, truth, lie, fear, win, lose]
+  emotional_keyword_bonus: 10     # Points par mot-cle trouve (plafonne)
+  emotional_keyword_max: 30       # Plafond du bonus mots-cles
+
+  question_bonus: 10              # Question rhetorique detectee ("?" dans le texte)
+  number_bonus: 8                 # Chiffre ou statistique marquante detectee
+  short_punchline_bonus: 12       # Phrase courte et percutante (< 12 mots)
+  exclamation_bonus: 6            # Ponctuation exclamative
+
+# --- Signaux audio ---
+audio_signals:
+  volume_peak_bonus: 15           # Pic de volume net par rapport a la moyenne
+  volume_peak_threshold: 1.5      # Pic = volume > moyenne x ce facteur
+  speech_rate_bonus: 10           # Acceleration du debit de parole
+  laughter_bonus: 15              # Rire detecte
+  dramatic_silence_bonus: 12      # Silence dramatique suivi d'un pic
+
+# --- Signaux de structure ---
+structure_signals:
+  ideal_duration_range: [20, 60]  # Duree ideale d'un clip (secondes)
+  duration_bonus: 15              # Bonus si la duree est dans la fourchette ideale
+  filler_words:                   # Mots de remplissage qui diluent le contenu
+    fr: [euh, bah, ben, genre, voila, en fait, du coup]
+    en: [um, uh, like, you know, basically, actually]
+  filler_penalty_per_word: 2      # Penalite par mot de remplissage
+  filler_penalty_max: 15          # Plafond de la penalite

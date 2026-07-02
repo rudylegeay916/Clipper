@@ -1,0 +1,57 @@
+# ============================================================
+# Phase 8 - Styles de sous-titres animes
+# ============================================================
+# 3 styles predefinis, personnalisables. Le style actif est
+# choisi dans config.yaml (subtitles.style).
+# Les couleurs sont au format hexadecimal RRGGBB.
+# La position verticale est en % de la hauteur de l'ecran
+# (0 = haut, 100 = bas). La zone 60-75% est la "zone sure"
+# qui evite les boutons de l'interface TikTok/Reels/Shorts.
+# ============================================================
+
+styles:
+
+  # Style 1 : classique viral - blanc gras, mot actif en jaune
+  bold_classic:
+    font: Montserrat ExtraBold
+    font_size: 72                # Taille pour une video 1080x1920
+    text_color: "FFFFFF"         # Couleur des mots non actifs
+    highlight_color: "FFD700"    # Couleur du mot en cours (karaoke)
+    outline_color: "000000"      # Couleur du contour
+    outline_width: 5             # Epaisseur du contour (lisibilite mobile)
+    background: none             # none | box (fond semi-opaque)
+    position_vertical: 68        # % depuis le haut (zone centrale sure)
+    max_words_per_line: 4        # Nombre de mots affiches simultanement
+    uppercase: true              # Tout en majuscules
+    emoji_keywords: false        # Emojis automatiques sur mots-cles (phase ulterieure)
+
+  # Style 2 : fond boite - texte blanc sur fond noir semi-opaque
+  boxed_clean:
+    font: Arial Black
+    font_size: 64
+    text_color: "FFFFFF"
+    highlight_color: "00E5FF"
+    outline_color: "000000"
+    outline_width: 2
+    background: box
+    background_color: "000000"
+    background_opacity: 0.6      # 0 = transparent, 1 = opaque
+    position_vertical: 70
+    max_words_per_line: 5
+    uppercase: false
+    emoji_keywords: false
+
+  # Style 3 : impact colore - mot actif grossi avec couleur vive
+  pop_highlight:
+    font: Montserrat ExtraBold
+    font_size: 68
+    text_color: "FFFFFF"
+    highlight_color: "39FF14"
+    highlight_scale: 1.15        # Le mot actif est legerement grossi
+    outline_color: "000000"
+    outline_width: 4
+    background: none
+    position_vertical: 65
+    max_words_per_line: 3
+    uppercase: true
+    emoji_keywords: false

@@ -1,0 +1,33 @@
+# --- Environnements Python ---
+.venv/
+venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+
+# --- Secrets (ne JAMAIS committer les clés API) ---
+.env
+
+# --- Données lourdes : vidéos, caches, sorties ---
+# On garde les dossiers (via .gitkeep) mais pas leur contenu
+input/*
+!input/.gitkeep
+output/*
+!output/.gitkeep
+cache/*
+!cache/.gitkeep
+samples/*
+!samples/.gitkeep
+assets/music/*
+!assets/music/.gitkeep
+assets/logo/*
+!assets/logo/.gitkeep
+
+# --- Modèles Whisper téléchargés localement ---
+models/
+
+# --- Fichiers systèmes ---
+.DS_Store
+Thumbs.db
+desktop.ini

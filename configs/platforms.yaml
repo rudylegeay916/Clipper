@@ -1,0 +1,55 @@
+# ============================================================
+# Phase 12 - Specifications d'export par plateforme
+# ============================================================
+# ATTENTION : ces specs evoluent regulierement. A verifier
+# au moment d'attaquer la Phase 12 (durees max notamment).
+# Valeurs par defaut raisonnables pour du 9:16 en 2026.
+# ============================================================
+
+platforms:
+
+  tiktok:
+    resolution: [1080, 1920]
+    aspect_ratio: "9:16"
+    fps: 30
+    max_duration: 600            # 10 min techniquement, mais 15-60s = zone virale
+    optimal_duration: [15, 60]
+    video_codec: libx264
+    video_bitrate: "8M"
+    audio_codec: aac
+    audio_bitrate: "192k"
+    container: mp4
+
+  instagram_reels:
+    resolution: [1080, 1920]
+    aspect_ratio: "9:16"
+    fps: 30
+    max_duration: 180            # 3 min max pour les Reels
+    optimal_duration: [15, 60]
+    video_codec: libx264
+    video_bitrate: "8M"
+    audio_codec: aac
+    audio_bitrate: "192k"
+    container: mp4
+
+  youtube_shorts:
+    resolution: [1080, 1920]
+    aspect_ratio: "9:16"
+    fps: 30
+    max_duration: 180            # 3 min max depuis oct. 2024
+    optimal_duration: [20, 60]
+    video_codec: libx264
+    video_bitrate: "10M"
+    audio_codec: aac
+    audio_bitrate: "192k"
+    container: mp4
+
+# --- Export master haute qualite (archive / re-edition) ---
+master:
+  resolution: [1080, 1920]
+  fps: 30
+  video_codec: libx264
+  crf: 18                        # Qualite quasi sans perte visible
+  audio_codec: aac
+  audio_bitrate: "256k"
+  container: mp4
