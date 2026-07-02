@@ -112,6 +112,23 @@ python -m src.ingestion.ingest input/ma_video.mp4 --force
 
 Résultat : `output/<nom_video>/metadata.json` (durée, résolution, fps, codecs, piste audio, taille).
 
+### Prévisualiser une vidéo (Phase 2 bis)
+
+Génère une page HTML locale avec lecteur vidéo, métadonnées et miniatures — à ouvrir par double-clic, aucun serveur requis :
+
+```powershell
+# Depuis une vidéo (l'ingère d'abord si nécessaire)
+python -m src.preview.preview samples/sample_20s.mp4
+
+# Ou depuis un metadata.json déjà généré
+python -m src.preview.preview output/sample_20s/metadata.json
+
+# Ouvrir la page dans le navigateur (Windows)
+start output\sample_20s\preview.html
+```
+
+Résultat : `output/<nom_video>/preview.html` + miniatures dans `output/<nom_video>/thumbnails/`.
+
 ### Générer une vidéo de test
 
 Pas de vidéo sous la main ? Générez-en une (mire animée + bip audio) :
@@ -170,6 +187,7 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 |---|---|---|
 | 1 | Setup projet, configs, vérification système | ✅ Fait |
 | 2 | Ingestion vidéo (fichier local / URL) | ✅ Fait |
+| 2 bis | Preview HTML (lecteur + miniatures) | ✅ Fait |
 | 3 | Transcription (faster-whisper) | À venir |
 | 4 | Détection silences + points de coupe sûrs | À venir |
 | 5 | Scoring des moments forts | À venir |
