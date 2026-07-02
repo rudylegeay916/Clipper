@@ -34,6 +34,84 @@ logger = get_logger(__name__)
 
 
 # ---------------------------------------------------------------------------
+# Proxy video (compatibilite navigateur)
+# ---------------------------------------------------------------------------
+
+# Seule combinaison consideree comme sure partout : conteneur MP4,
+# video H.264 8 bits (yuv420p), audio AAC (ou pas d'audio du tout).
+BROWSER_SAFE_EXTENSIONS = {".mp4", ".m4v"}
+
+
+def needs_proxy(metadata: dict) -> bool:
+    """
+    Determine si la video a besoin d'un proxy pour etre lue dans un
+    navigateur. Regle volontairement stricte : MP4 + H.264 (yuv420p)
+    + AAC (ou sans audio) -> lisible partout ; tout le reste (mkv,
+    HEVC, mov exotiques, 10 bits...) -> proxy.
+    """
+    extension = Path(metadata["source"]["file"]).suffix.lower()
+    video = metadata["video"]
+    audio = metadata["audio"]
+
+    extension_ok = extension in BROWSER_SAFE_EXTENSIONS
+    video_ok = video.get("codec") == "h264" and video.get("pixel_format") == "yuv420p"
+    audio_ok = (not audio["present"]) or audio.get("codec") == "aac"
+
+    return not (extension_ok and video_ok and audio_ok)
+
+
+def create_preview_proxy(
+    video_path: Path,
+    output_dir: Path,
+    has_audio: bool,
+    max_height: int = 720,
+    crf: int = 28,
+    audio_bitrate: str = "96k",
+    force: bool = False,
+) -> Path:
+    """
+    Cree une copie legere MP4 H.264/AAC de la video pour le lecteur de
+    preview, dans output_dir/preview_media/preview_proxy.mp4.
+    La video ORIGINALE n'est jamais touchee : le pipeline (transcription,
+    decoupage, export) continue de travailler sur le fichier source.
+    """
+    proxy_dir = output_dir / "preview_media"
+    proxy_dir.mkdir(parents=True, exist_ok=True)
+    proxy_path = proxy_dir / "preview_proxy.mp4"
+
+    # Reprise : le reencodage est l'etape couteuse, on ne le refait pas
+    if proxy_path.is_file() and not force:
+        logger.info("Reprise : proxy existant reutilise (%s)", proxy_path)
+        return proxy_path
+
+    logger.info(
+        "Creation du proxy de preview (max %sp, crf %s) — l'originale n'est pas modifiee ...",
+        max_height, crf,
+    )
+
+    args = [
+        "-i", video_path,
+        # Hauteur plafonnee a max_height, jamais agrandie, dimensions
+        # paires (obligatoire pour H.264). La virgule interne du min()
+        # est echappee pour ne pas etre lue comme separateur de filtres.
+        "-vf", f"scale=-2:trunc(min({max_height}\\,ih)/2)*2",
+        "-c:v", "libx264", "-preset", "veryfast", "-crf", crf,
+        "-pix_fmt", "yuv420p",
+        # faststart : index deplace en debut de fichier -> lecture
+        # immediate dans le navigateur sans tout telecharger
+        "-movflags", "+faststart",
+    ]
+    if has_audio:
+        args += ["-c:a", "aac", "-b:a", audio_bitrate]
+    else:
+        args += ["-an"]  # Pas de piste audio dans la source : proxy video seul
+
+    run_ffmpeg(args + [proxy_path])
+    logger.info("Proxy cree : %s", proxy_path)
+    return proxy_path
+
+
+# ---------------------------------------------------------------------------
 # Miniatures
 # ---------------------------------------------------------------------------
 
@@ -94,10 +172,21 @@ def _relative_href(target: Path, base_dir: Path) -> str:
     return relative.replace(os.sep, "/")
 
 
-def build_preview_html(metadata: dict, output_dir: Path, thumbnails: list[Path]) -> str:
-    """Construit le contenu de preview.html (page autonome, CSS inline)."""
+def build_preview_html(
+    metadata: dict,
+    output_dir: Path,
+    thumbnails: list[Path],
+    player_path: Path | None = None,
+    proxy_used: bool = False,
+) -> str:
+    """
+    Construit le contenu de preview.html (page autonome, CSS inline).
+    player_path : fichier lu par le lecteur HTML5 (proxy si fourni,
+    sinon la video originale). Les liens pointent toujours vers l'originale.
+    """
     video_path = Path(metadata["source"]["file"])
     video_href = _relative_href(video_path, output_dir)
+    player_href = _relative_href(player_path, output_dir) if player_path else video_href
     metadata_href = "metadata.json"
 
     video = metadata["video"]
@@ -134,6 +223,15 @@ def build_preview_html(metadata: dict, output_dir: Path, thumbnails: list[Path])
         "la transcription (Phase 3) sera impossible.</p>"
         if not audio["present"] else ""
     )
+    proxy_notice = (
+        '<p class="notice">ℹ Preview proxy généré pour compatibilité navigateur '
+        "(la vidéo originale n'est pas modifiée : le pipeline travaille toujours dessus).</p>"
+        if proxy_used else ""
+    )
+    proxy_link = (
+        f'\n    <a class="secondary" href="{html.escape(player_href)}">proxy de preview</a>'
+        if proxy_used else ""
+    )
 
     return f"""<!DOCTYPE html>
 <html lang="fr">
@@ -156,15 +254,18 @@ def build_preview_html(metadata: dict, output_dir: Path, thumbnails: list[Path])
     .links a.secondary {{ background: #374151; }}
     .warning {{ background: #4a2d13; border: 1px solid #b45309; padding: 10px 14px;
                border-radius: 6px; }}
+    .notice {{ background: #13304a; border: 1px solid #2563eb; padding: 10px 14px;
+              border-radius: 6px; font-size: 0.9rem; }}
     footer {{ margin-top: 40px; color: #6b7280; font-size: 0.8rem; }}
   </style>
 </head>
 <body>
   <h1>🎬 Preview — {title}</h1>
   {audio_warning}
+  {proxy_notice}
 
   <h2>Lecteur</h2>
-  <video src="{html.escape(video_href)}" controls preload="metadata"></video>
+  <video src="{html.escape(player_href)}" controls preload="metadata"></video>
 
   <h2>Métadonnées</h2>
   <table>
@@ -178,8 +279,8 @@ def build_preview_html(metadata: dict, output_dir: Path, thumbnails: list[Path])
 
   <h2>Liens</h2>
   <div class="links">
-    <a href="{html.escape(video_href)}">▶ Ouvrir le fichier vidéo</a>
-    <a class="secondary" href="{metadata_href}">metadata.json</a>
+    <a href="{html.escape(video_href)}">▶ Ouvrir le fichier vidéo original</a>
+    <a class="secondary" href="{metadata_href}">metadata.json</a>{proxy_link}
   </div>
 
   <footer>Généré par otherme_clipper (Phase 2 bis). Page locale : aucun serveur requis.</footer>
@@ -232,8 +333,34 @@ def generate_preview(source: str, force: bool = False) -> Path:
             "Elle a peut-etre ete deplacee : relancez l'ingestion."
         )
 
-    # --- 2. Miniatures ---
+    # --- 2. Proxy si la source n'est pas lisible dans un navigateur ---
     preview_config = config.get("preview", {})
+    player_path = None
+    proxy_used = False
+    if needs_proxy(metadata):
+        if preview_config.get("create_proxy_if_needed", True):
+            player_path = create_preview_proxy(
+                video_path,
+                output_dir,
+                has_audio=metadata["audio"]["present"],
+                max_height=preview_config.get("proxy_max_height", 720),
+                crf=preview_config.get("proxy_crf", 28),
+                audio_bitrate=preview_config.get("proxy_audio_bitrate", "96k"),
+                force=force,
+            )
+            proxy_used = True
+            logger.info("Lecteur de preview : PROXY (source non lisible par un navigateur)")
+        else:
+            logger.warning(
+                "Source probablement non lisible par un navigateur (%s/%s) et "
+                "create_proxy_if_needed est desactive : le lecteur risque de rester noir.",
+                Path(metadata["source"]["file"]).suffix,
+                metadata["video"]["codec"],
+            )
+    else:
+        logger.info("Lecteur de preview : video ORIGINALE (deja compatible navigateur)")
+
+    # --- 3. Miniatures (toujours depuis l'originale : qualite maximale) ---
     thumbnails = generate_thumbnails(
         video_path,
         output_dir,
@@ -242,8 +369,10 @@ def generate_preview(source: str, force: bool = False) -> Path:
         width=preview_config.get("thumbnail_width", 320),
     )
 
-    # --- 3. Page HTML ---
-    content = build_preview_html(metadata, output_dir, thumbnails)
+    # --- 4. Page HTML ---
+    content = build_preview_html(
+        metadata, output_dir, thumbnails, player_path=player_path, proxy_used=proxy_used
+    )
     preview_path.write_text(content, encoding="utf-8")
 
     logger.info("Preview generee : %s", preview_path)

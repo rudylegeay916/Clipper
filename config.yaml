@@ -36,6 +36,15 @@ ingestion:
 preview:
   thumbnail_count: 8        # Nombre de miniatures extraites de la video
   thumbnail_width: 320      # Largeur des miniatures en pixels (hauteur auto)
+  # Proxy video : si la source n'est pas lisible par un navigateur
+  # (mkv, HEVC, certains mov...), une copie legere MP4 H.264/AAC est
+  # generee pour le lecteur de preview. L'originale n'est JAMAIS
+  # modifiee : transcription, decoupage et export utilisent toujours
+  # le fichier source.
+  create_proxy_if_needed: true
+  proxy_max_height: 720     # Hauteur max du proxy (720p suffit pour previsualiser)
+  proxy_crf: 28             # Qualite du proxy (plus haut = plus leger)
+  proxy_audio_bitrate: "96k"
 
 # --- Phase 3 : transcription ---
 transcription:
