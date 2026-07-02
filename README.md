@@ -167,6 +167,23 @@ python -m src.detection.analyze input/podcast.mp4 --force
 
 Résultat : `output/<nom_video>/analysis.json` (silences, scènes éventuelles, points de coupe sûrs typés `sentence_end` / `silence` / `phrase_gap`). Seuils réglables dans `config.yaml` (`silence_detection`, `scene_detection`, `cut_points`).
 
+### Scorer les moments forts (Phase 5)
+
+Identifie les passages à fort potentiel de clip (score 0-100) en combinant signaux textuels, audio et de structure — pondérations réglables dans `configs/scoring.yaml` :
+
+```powershell
+# Prérequis : transcription faite (Phase 3). L'analyse (Phase 4) se lance toute seule si absente.
+python -m src.scoring.score input/podcast.mp4
+
+# Limiter aux 5 meilleurs clips
+python -m src.scoring.score input/podcast.mp4 --top 5
+
+# Rescorer (après un ajustement de configs/scoring.yaml par exemple)
+python -m src.scoring.score input/podcast.mp4 --force
+```
+
+Résultat : `output/<nom_video>/candidates.json` — clips candidats classés par score, bornés sur les points de coupe sûrs (jamais au milieu d'un mot), avec le détail des signaux déclenchés pour comprendre chaque score. Seuil, nombre max et chevauchement réglables dans `config.yaml` (section `clips`).
+
 ### Générer une vidéo de test
 
 Pas de vidéo sous la main ? Générez-en une (mire animée + bip audio) :
@@ -228,7 +245,7 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 | 2 bis | Preview HTML (lecteur + miniatures + proxy navigateur) | ✅ Fait |
 | 3 | Transcription (faster-whisper, mot par mot) | ✅ Fait |
 | 4 | Détection silences + points de coupe sûrs | ✅ Fait |
-| 5 | Scoring des moments forts | À venir |
+| 5 | Scoring des moments forts | ✅ Fait |
 | 6 | Découpage automatique | À venir |
 | 7 | Reframe vertical intelligent | À venir |
 | 8 | Sous-titres animés | À venir |

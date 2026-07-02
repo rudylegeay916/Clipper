@@ -5,9 +5,8 @@
 # --- Coeur du pipeline (MVP, phases 2 a 6) ---
 faster-whisper>=1.0,<2.0     # Transcription locale avec timestamps mot par mot
 yt-dlp>=2025.1               # Telechargement YouTube / Twitch VOD
-numpy>=1.26,<2.0             # Calculs numeriques (contrainte <2.0 pour compatibilite opencv/librosa)
+numpy>=1.26,<2.0             # Calculs numeriques + profil d'energie audio du scoring
 opencv-python>=4.9           # Lecture et analyse des frames video
-librosa>=0.10                # Analyse audio : volume, energie, rythme (scoring phase 5)
 
 # --- Confort et robustesse ---
 pyyaml>=6.0                  # Lecture des fichiers de config
