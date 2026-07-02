@@ -32,6 +32,11 @@ ingestion:
   # Qualite maximale telechargee via yt-dlp (evite les fichiers 4K enormes)
   download_max_height: 1080
 
+# --- Phase 2 bis : preview ---
+preview:
+  thumbnail_count: 8        # Nombre de miniatures extraites de la video
+  thumbnail_width: 320      # Largeur des miniatures en pixels (hauteur auto)
+
 # --- Phase 3 : transcription ---
 transcription:
   model: small              # tiny | base | small | medium | large-v3 (qualite vs vitesse)
