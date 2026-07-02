@@ -41,7 +41,7 @@ ffmpeg -version
 ### 3. Récupérer le projet
 
 ```powershell
-git clone https://github.com/rudylegeay916/Otherme2.0.git otherme_clipper
+git clone https://github.com/rudylegeay916/Clipper.git otherme_clipper
 cd otherme_clipper
 ```
 
@@ -73,7 +73,7 @@ Ce script vérifie Python, FFmpeg, l'arborescence et les accès en écriture, et
 
 ```bash
 brew install python@3.11 ffmpeg
-git clone https://github.com/rudylegeay916/Otherme2.0.git otherme_clipper
+git clone https://github.com/rudylegeay916/Clipper.git otherme_clipper
 cd otherme_clipper
 python3.11 -m venv .venv
 source .venv/bin/activate
@@ -85,7 +85,7 @@ python -m src.check_system
 
 ```bash
 sudo apt install python3.11 python3.11-venv ffmpeg
-git clone https://github.com/rudylegeay916/Otherme2.0.git otherme_clipper
+git clone https://github.com/rudylegeay916/Clipper.git otherme_clipper
 cd otherme_clipper
 python3.11 -m venv .venv
 source .venv/bin/activate
