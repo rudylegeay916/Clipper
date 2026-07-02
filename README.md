@@ -131,6 +131,25 @@ Résultat : `output/<nom_video>/preview.html` + miniatures dans `output/<nom_vid
 
 **Proxy de compatibilité navigateur** : si la source n'est pas directement lisible dans un navigateur (`.mkv`, HEVC, `.webm`, certains `.mov`...), une copie légère MP4 H.264/AAC est générée automatiquement dans `output/<nom_video>/preview_media/preview_proxy.mp4` et le lecteur pointe dessus. **La vidéo originale n'est jamais modifiée** : transcription, découpage et export travaillent toujours sur le fichier source. Réglable dans `config.yaml` (section `preview` : `create_proxy_if_needed`, `proxy_max_height`, `proxy_crf`, `proxy_audio_bitrate`).
 
+### Transcrire une vidéo (Phase 3)
+
+Transcription 100 % locale avec faster-whisper, timestamps précis au mot près :
+
+```powershell
+# Langue détectée automatiquement (config.yaml : transcription.language: auto)
+python -m src.transcription.transcribe input/podcast.mp4
+
+# Forcer la langue
+python -m src.transcription.transcribe input/podcast.mp4 --language fr
+
+# Retranscrire malgré un transcript.json existant
+python -m src.transcription.transcribe input/podcast.mp4 --force
+```
+
+Résultat : `output/<nom_video>/transcript.json` (segments + mots horodatés + confiance). L'audio intermédiaire (WAV 16 kHz mono) est mis en cache dans `cache/<nom_video>/audio.wav`.
+
+> **Premier lancement** : le modèle Whisper est téléchargé (~500 Mo pour `small`) puis mis en cache — les lancements suivants sont entièrement hors ligne. Modèle réglable dans `config.yaml` (`transcription.model` : `tiny`/`base`/`small`/`medium`/`large-v3` — plus gros = plus précis mais plus lent).
+
 ### Générer une vidéo de test
 
 Pas de vidéo sous la main ? Générez-en une (mire animée + bip audio) :
@@ -190,7 +209,7 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 | 1 | Setup projet, configs, vérification système | ✅ Fait |
 | 2 | Ingestion vidéo (fichier local / URL) | ✅ Fait |
 | 2 bis | Preview HTML (lecteur + miniatures + proxy navigateur) | ✅ Fait |
-| 3 | Transcription (faster-whisper) | À venir |
+| 3 | Transcription (faster-whisper, mot par mot) | ✅ Fait |
 | 4 | Détection silences + points de coupe sûrs | À venir |
 | 5 | Scoring des moments forts | À venir |
 | 6 | Découpage automatique | À venir |
