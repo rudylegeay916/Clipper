@@ -129,6 +129,8 @@ start output\sample_20s\preview.html
 
 Résultat : `output/<nom_video>/preview.html` + miniatures dans `output/<nom_video>/thumbnails/`.
 
+**Proxy de compatibilité navigateur** : si la source n'est pas directement lisible dans un navigateur (`.mkv`, HEVC, `.webm`, certains `.mov`...), une copie légère MP4 H.264/AAC est générée automatiquement dans `output/<nom_video>/preview_media/preview_proxy.mp4` et le lecteur pointe dessus. **La vidéo originale n'est jamais modifiée** : transcription, découpage et export travaillent toujours sur le fichier source. Réglable dans `config.yaml` (section `preview` : `create_proxy_if_needed`, `proxy_max_height`, `proxy_crf`, `proxy_audio_bitrate`).
+
 ### Générer une vidéo de test
 
 Pas de vidéo sous la main ? Générez-en une (mire animée + bip audio) :
@@ -187,7 +189,7 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 |---|---|---|
 | 1 | Setup projet, configs, vérification système | ✅ Fait |
 | 2 | Ingestion vidéo (fichier local / URL) | ✅ Fait |
-| 2 bis | Preview HTML (lecteur + miniatures) | ✅ Fait |
+| 2 bis | Preview HTML (lecteur + miniatures + proxy navigateur) | ✅ Fait |
 | 3 | Transcription (faster-whisper) | À venir |
 | 4 | Détection silences + points de coupe sûrs | À venir |
 | 5 | Scoring des moments forts | À venir |
