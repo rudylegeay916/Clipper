@@ -1,0 +1,74 @@
+# ============================================================
+# otherme_clipper - Configuration globale du pipeline
+# ============================================================
+# Tous les parametres ajustables sont centralises ici.
+# Les configs specialisees (scoring, styles de sous-titres,
+# specs plateformes, templates de montage) sont dans configs/.
+# ============================================================
+
+project:
+  name: otherme_clipper
+
+# --- Chemins (relatifs a la racine du projet) ---
+paths:
+  input_dir: input          # Videos sources a traiter
+  output_dir: output        # Resultats (un sous-dossier par video)
+  cache_dir: cache          # Transcriptions et analyses reutilisables
+  samples_dir: samples      # Petites videos de test
+  assets_dir: assets        # Polices, musiques, logo
+
+# --- Systeme de reprise ---
+# Si un resultat intermediaire existe deja (transcript.json,
+# analysis.json, candidates.json), il est reutilise au lieu
+# d'etre recalcule. Mettre overwrite: true pour forcer le recalcul.
+pipeline:
+  resume: true
+  overwrite: false
+
+# --- Phase 2 : ingestion ---
+ingestion:
+  # Formats video acceptes en entree
+  allowed_extensions: [.mp4, .mkv, .mov, .avi, .webm, .ts, .flv]
+  # Qualite maximale telechargee via yt-dlp (evite les fichiers 4K enormes)
+  download_max_height: 1080
+
+# --- Phase 3 : transcription ---
+transcription:
+  model: small              # tiny | base | small | medium | large-v3 (qualite vs vitesse)
+  language: auto            # auto = detection automatique | fr | en
+  word_timestamps: true     # Indispensable pour les sous-titres karaoke
+  compute_type: int8        # int8 = rapide sur CPU | float16 si GPU NVIDIA
+  device: auto              # auto | cpu | cuda
+
+# --- Phase 4 : detection de silences ---
+silence_detection:
+  noise_threshold_db: -35        # Volume (dB) en dessous duquel on considere un silence
+  min_silence_duration: 0.35     # Duree minimale (secondes) pour compter comme une pause
+
+# --- Phases 5-6 : clips candidats et decoupage ---
+clips:
+  min_duration: 15          # Duree minimale d'un clip (secondes)
+  max_duration: 90          # Duree maximale d'un clip (secondes)
+  margin_before: 0.3        # Marge ajoutee avant le debut du clip (secondes)
+  margin_after: 0.3         # Marge ajoutee apres la fin du clip (secondes)
+  max_clips_per_video: 10   # Nombre maximal de clips generes par video source
+  min_score: 40             # Score minimal (0-100) pour retenir un clip candidat
+
+# --- Phase 8 : sous-titres ---
+subtitles:
+  style: bold_classic       # Nom d'un style defini dans configs/subtitle_styles.yaml
+
+# --- Phase 12 : export ---
+export:
+  vertical_resolution: [1080, 1920]   # Format 9:16
+  fps: 30
+  video_codec: libx264
+  audio_codec: aac
+  audio_bitrate: 192k
+  crf_master: 18            # Qualite export master (plus bas = meilleure qualite)
+  crf_compressed: 23        # Qualite export compresse pret a poster
+
+# --- Journalisation ---
+logging:
+  level: INFO               # DEBUG | INFO | WARNING | ERROR
+  log_file: output/pipeline.log

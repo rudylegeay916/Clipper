@@ -1,0 +1,25 @@
+# otherme_clipper - dependances Python
+# Version cible : Python 3.11 (eviter 3.12+ pour la compatibilite mediapipe/faster-whisper)
+# Installation : pip install -r requirements.txt
+
+# --- Coeur du pipeline (MVP, phases 2 a 6) ---
+faster-whisper>=1.0,<2.0     # Transcription locale avec timestamps mot par mot
+yt-dlp>=2025.1               # Telechargement YouTube / Twitch VOD
+numpy>=1.26,<2.0             # Calculs numeriques (contrainte <2.0 pour compatibilite opencv/librosa)
+opencv-python>=4.9           # Lecture et analyse des frames video
+librosa>=0.10                # Analyse audio : volume, energie, rythme (scoring phase 5)
+
+# --- Confort et robustesse ---
+pyyaml>=6.0                  # Lecture des fichiers de config
+rich>=13.0                   # Affichage CLI lisible : couleurs, barres de progression
+pydantic>=2.0                # Validation des configs et des donnees entre modules
+python-dotenv>=1.0           # Chargement du fichier .env (cles API optionnelles)
+
+# --- Tests ---
+pytest>=8.0
+
+# --- Phases ulterieures (decommenter au moment voulu) ---
+# mediapipe>=0.10            # Phase 7 : detection de visages pour le reframe intelligent
+# scenedetect>=0.6           # Phase 4 (option) : detection de changements de plan
+# anthropic>=0.40            # Phase 10 (option) : generation titres/hashtags via API Claude
+# streamlit>=1.35            # Phase 14 : interface web
