@@ -82,6 +82,15 @@ clips:
   min_score: 40             # Score minimal (0-100) pour retenir un clip candidat
   max_overlap: 0.25         # Chevauchement maximal tolere entre deux clips retenus (0-1)
 
+# --- Phase 6 : decoupage ---
+cutting:
+  mode: auto                # auto : copie si keyframe proche + source compatible,
+                            #        reencodage precis sinon | copy | encode
+  keyframe_tolerance: 0.2   # Ecart max (s) entre keyframe et debut voulu pour copier
+  encode_crf: 20            # Qualite du reencodage (intermediaire : les phases 7-9
+                            #   reencoderont encore, on garde de la marge)
+  encode_preset: veryfast
+
 # --- Phase 8 : sous-titres ---
 subtitles:
   style: bold_classic       # Nom d'un style defini dans configs/subtitle_styles.yaml
