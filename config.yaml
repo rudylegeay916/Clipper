@@ -156,6 +156,21 @@ subtitles:
   crf: 20
   preset: medium
 
+# --- Phase 9 : templates de montage ---
+templates:
+  default:
+    enabled: true
+    name: clean_social        # clean_social | punchy_short (definis dans configs/templates.yaml)
+    hook_title: true          # Titre accrocheur en haut pendant les premieres secondes
+    hook_duration: 3.0
+    progress_bar: true        # Barre de progression discrete en bas
+    subtle_zoom: true         # Zoom lent (Ken Burns) anti-statisme
+    watermark: false
+    logo_path: null           # ex: assets/logo/logo.png (ignore si absent, jamais de crash)
+    safe_margins: true        # Hook maintenu dans la zone sure (hors UI plateformes)
+  crf: 20
+  preset: medium
+
 # --- Phase 12 : export ---
 export:
   vertical_resolution: [1080, 1920]   # Format 9:16
