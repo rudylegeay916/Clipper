@@ -184,6 +184,8 @@ python -m src.scoring.score input/podcast.mp4 --force
 
 Résultat : `output/<nom_video>/candidates.json` — clips candidats classés par score, bornés sur les points de coupe sûrs (jamais au milieu d'un mot), avec le détail des signaux déclenchés pour comprendre chaque score. Seuil, nombre max et chevauchement réglables dans `config.yaml` (section `clips`).
 
+**Scoring orienté rétention (Phase 5 bis)** : un 4ᵉ sous-score « hook » mesure la vitesse d'accroche — score plein si un signal fort (question, chiffre, mot émotionnel, contradiction) arrive dans les 3 premières secondes, pénalités si le clip commence par une intro molle (« bonjour », « alors », « du coup »…), dépend du contexte précédent, ou si le hook est tardif. Si le moment fort arrive trop tard dans une fenêtre, le début du clip est **recentré automatiquement** juste avant le hook (toujours sur un point de coupe sûr). Chaque candidat est enrichi : `hook_text`, `hook_start_offset`, `reason` (explication lisible), `suggested_title`, `platform_fit`. Réglages dans `configs/scoring.yaml` (`hook_signals`, `recenter`).
+
 ### Générer une vidéo de test
 
 Pas de vidéo sous la main ? Générez-en une (mire animée + bip audio) :
@@ -246,6 +248,7 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 | 3 | Transcription (faster-whisper, mot par mot) | ✅ Fait |
 | 4 | Détection silences + points de coupe sûrs | ✅ Fait |
 | 5 | Scoring des moments forts | ✅ Fait |
+| 5 bis | Scoring rétention (hook + recentrage) | ✅ Fait |
 | 6 | Découpage automatique | À venir |
 | 7 | Reframe vertical intelligent | À venir |
 | 8 | Sous-titres animés | À venir |

@@ -39,6 +39,16 @@ import numpy as np
 import yaml
 
 from src.detection.analyze import analyze_video
+from src.scoring.hooks import (
+    build_reason,
+    detect_opening_problems,
+    extract_hook_text,
+    find_first_strong_signal,
+    make_suggested_title,
+    recenter_start,
+    score_hook,
+    suggest_platform,
+)
 from src.utils.config import PROJECT_ROOT, get_path, load_config
 from src.utils.ffmpeg import FFmpegError
 from src.utils.logging_setup import get_logger
@@ -56,6 +66,14 @@ def load_scoring_config() -> dict:
     """Charge configs/scoring.yaml (poids et bonus ajustables)."""
     with open(SCORING_CONFIG_FILE, encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def _all_language_words(mapping: dict) -> set[str]:
+    """Aplati un dict {fr: [...], en: [...]} en un set unique (franglais)."""
+    values: set[str] = set()
+    for language_list in mapping.values():
+        values.update(language_list)
+    return values
 
 
 # ---------------------------------------------------------------------------
@@ -460,26 +478,75 @@ def score_video(source: str, force: bool = False, top: int | None = None) -> Pat
             clip_limits.get("min_duration", 15),
         )
 
-    # --- Scoring de chaque fenetre ---
+    # --- Scoring de chaque fenetre (avec analyse de hook et recentrage) ---
     logger.info("Scoring de %d fenetres candidates ...", len(windows))
     weights = scoring_config["weights"]
-    scored = []
-    for window in windows:
-        start, end = window["start"], window["end"]
-        # Mots et segments de la fenetre (recherche binaire : rapide meme
-        # sur un transcript de plusieurs heures)
+    hook_config = scoring_config.get("hook_signals", {})
+    recenter_config = scoring_config.get("recenter", {})
+    keywords = _all_language_words(scoring_config["text_signals"]["emotional_keywords"])
+    fillers = _all_language_words(scoring_config["structure_signals"]["filler_words"])
+    cut_times = [p["time"] for p in cut_points]
+    cut_type_by_time = {p["time"]: p["type"] for p in cut_points}
+
+    def slice_window(start: float, end: float) -> tuple[list[dict], list[dict]]:
+        """Mots et segments d'une fenetre (recherche binaire : rapide
+        meme sur un transcript de plusieurs heures)."""
         first_word = bisect.bisect_left(word_starts, start)
         last_word = bisect.bisect_left(word_starts, end)
-        window_words = all_words[first_word:last_word]
-        if not window_words:
-            continue  # Fenetre sans parole : sans interet pour un clip
         first_segment = max(0, bisect.bisect_left(segment_starts, start) - 1)
         last_segment = bisect.bisect_left(segment_starts, end)
         window_segments = [
             s for s in segments[first_segment:last_segment + 1]
             if s["start"] >= start - 0.01 and s["end"] <= end + 0.01
         ]
+        return all_words[first_word:last_word], window_segments
 
+    scored = []
+    seen_windows: set[tuple[float, float]] = set()
+    recentered_count = 0
+    for window in windows:
+        start, end = window["start"], window["end"]
+        window_words, window_segments = slice_window(start, end)
+        if not window_words:
+            continue  # Fenetre sans parole : sans interet pour un clip
+
+        # --- Phase 5 bis : premier signal fort + recentrage eventuel ---
+        first_signal_time, signal_types = find_first_strong_signal(
+            window_words, keywords, hook_config
+        )
+        recentered = False
+        original_start = start
+        if first_signal_time is not None:
+            new_start = recenter_start(
+                cut_times, start, end, first_signal_time,
+                min_duration=clip_limits.get("min_duration", 15),
+                config=recenter_config,
+            )
+            if new_start != start:
+                start = new_start
+                window_words, window_segments = slice_window(start, end)
+                if not window_words:
+                    continue
+                first_signal_time, signal_types = find_first_strong_signal(
+                    window_words, keywords, hook_config
+                )
+                recentered = True
+                recentered_count += 1
+
+        # Le recentrage peut faire converger plusieurs fenetres vers les
+        # memes bornes : on ne score chaque fenetre finale qu'une fois
+        window_key = (start, end)
+        if window_key in seen_windows:
+            continue
+        seen_windows.add(window_key)
+
+        # --- Signaux negatifs de demarrage + sous-score hook ---
+        opening_problems = detect_opening_problems(window_words, fillers, hook_config)
+        hook_score_value, hook_detail = score_hook(
+            start, first_signal_time, opening_problems, hook_config
+        )
+
+        # --- Les trois familles historiques ---
         text_score, text_details = score_text(
             window_words, window_segments, language, scoring_config
         )
@@ -495,24 +562,68 @@ def score_video(source: str, force: bool = False, top: int | None = None) -> Pat
             weights["text"] * text_score
             + weights["audio"] * audio_score
             + weights["structure"] * structure_score
+            + weights["hook"] * hook_score_value
         )
-        scored.append({
+
+        # --- Enrichissements lisibles (hook, raison, titre, plateforme) ---
+        duration = end - start
+        hook_text = extract_hook_text(window_segments, window_words, first_signal_time)
+        family_scores = {
+            "text": round(text_score, 1),
+            "audio": round(audio_score, 1),
+            "structure": round(structure_score, 1),
+            "hook": round(hook_score_value, 1),
+        }
+        candidate = {
             **window,
-            "duration": round(end - start, 3),
+            "start": start,
+            "start_cut_type": cut_type_by_time.get(start, window["start_cut_type"]),
+            "duration": round(duration, 3),
             "score": round(final_score, 1),
-            "scores": {
-                "text": round(text_score, 1),
-                "audio": round(audio_score, 1),
-                "structure": round(structure_score, 1),
+            "recentered": recentered,
+            "hook_text": hook_text,
+            "hook_start_offset": hook_detail["hook_offset_seconds"],
+            "suggested_title": make_suggested_title(hook_text),
+            "platform_fit": suggest_platform(duration, text_details, audio_details),
+            "reason": build_reason(
+                hook_detail, signal_types, text_details, audio_details,
+                structure_details, opening_problems, recentered,
+            ),
+            "scores": family_scores,
+            "score_detail": {
+                family: {
+                    "score": family_scores[family],
+                    "weight": weights[family],
+                    "contribution": round(weights[family] * family_scores[family], 1),
+                }
+                for family in ("text", "audio", "structure", "hook")
             },
             "signals": {
                 "text": text_details,
                 "audio": audio_details,
                 "structure": structure_details,
+                "hook": {
+                    "first_signal_types": signal_types,
+                    "base": hook_detail["base"],
+                    "penalties": hook_detail["penalties"],
+                    "weak_opening": opening_problems["weak_opening"],
+                    "context_dependent": opening_problems["context_dependent"],
+                    "filler_start_count": opening_problems["filler_start_count"],
+                },
             },
             "text": " ".join(w["word"] for w in window_words),
             "word_count": len(window_words),
-        })
+        }
+        if recentered:
+            candidate["original_start"] = original_start
+        candidate["score_detail"]["hook"]["penalties"] = hook_detail["penalties"]
+        scored.append(candidate)
+
+    if recentered_count:
+        logger.info(
+            "%d fenetres recentrees sur leur moment fort (hook trop tardif)",
+            recentered_count,
+        )
 
     # --- Selection finale ---
     max_clips = top or clip_limits.get("max_clips_per_video", 10)
