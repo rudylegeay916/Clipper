@@ -214,10 +214,13 @@ Transforme les clips bruts en vertical 1080×1920 avec suivi du visage principal
 # Prérequis : clips découpés (Phase 6)
 python -m src.reframe.vertical output/<nom_video>/metadata.json
 
-# Choix de la stratégie : auto (défaut) = suivi si possible ET stable, sinon crop central
+# Stratégie : auto (défaut) = crop central si suffisant, tracking seulement si nécessaire ET fluide
 python -m src.reframe.vertical output/<nom_video>/metadata.json --method auto
 python -m src.reframe.vertical output/<nom_video>/metadata.json --method face    # force le suivi
 python -m src.reframe.vertical output/<nom_video>/metadata.json --method center  # crop central direct
+
+# Profil de stabilité : stable (défaut, fluidité max) | balanced | follow (suit davantage)
+python -m src.reframe.vertical output/<nom_video>/metadata.json --stability balanced
 
 # Les 3 meilleurs seulement / régénérer
 python -m src.reframe.vertical output/<nom_video>/metadata.json --top 3 --force
@@ -295,7 +298,7 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 
 **Correctif Windows (post-validation)** : le chemin du fichier `sendcmd` passé au filtergraph FFmpeg cassait sous Windows (`C:\Users\...` → backslashes consommés et `:` interprété comme séparateur d'options). Corrigé : chemin converti en slashes, colon échappé, valeur entre quotes (`format_filter_path()`, recette validée contre le parseur FFmpeg), fichier de commandes créé à côté du clip de sortie plutôt que dans le temp système, et **fallback automatique en `center_crop`** (tracé `fallback_from: face_tracking` dans le manifest + warning dans les logs) si le rendu face_tracking échoue malgré tout — la phase ne plante plus jamais sur un clip.
 
-**Phase 7 bis — stabilisation (anti-saccades)** : le rendu initial envoyait une commande de crop par détection (toutes les 200 ms) → mouvement par paliers, saccadé sur footage réel. Corrigé par une trajectoire « caméraman » : **zone morte** (le cadre ne bouge pas tant que le visage reste dans ±10 % de la largeur du crop — un locuteur qui gesticule = plan fixe), **vitesse limitée** (glissement à 180 px/s max, jamais de saut), commandes interpolées à 15 Hz (pas ≤ 12 px, invisibles). Un **`tracking_jitter_score`** (inversions de direction/s) est mesuré sur la trajectoire finale : en mode `auto`, s'il dépasse `vertical.jitter_threshold` (0.8), le clip est automatiquement régénéré en `center_crop` (`fallback_reason` tracé dans le manifest) — la sortie est toujours fluide. Validation : clip au visage oscillant → **1 seule commande de crop** (plan fixe parfait) ; clip au visage traversant l'écran → 168 commandes fluides, jitter 0.00, visage jamais coupé (0/48).
+**Phase 7 bis v2 — stabilisation (la fluidité d'abord)** : en mode `auto`, **le tracking doit se mériter**. (1) Si le visage reste correctement cadré par un simple crop statique (zone sûre du profil, ≥ 95 % du temps), le crop central gagne — fluidité parfaite, tracking sans gain visuel évité. (2) Sinon, trajectoire « caméraman » (zone morte 20 %, panoramique ≤ 90 px/s, commandes à 30 Hz → pas ≤ 3 px) et **métriques de stabilité mesurées sur la trajectoire finale** : `total_crop_distance`, `average_crop_speed`, `max_crop_step_px`, `max_crop_acceleration`, `command_count`, `visual_stability_score` (0 = parfait). Le moindre seuil dépassé → régénération `center_crop` avec `fallback_reason` détaillée. Trois profils (`--stability stable|balanced|follow`, réglables dans `config.yaml → vertical.stability_profiles`). Validation vrais visages : locuteur oscillant → tracking **parfaitement immobile** (score 0/100, 1 commande) ; visage traversant l'écran en continu → `stable` le rejette (center_crop fluide), `follow` le suit (score 33/100, pas ≤ 3 px).
 
 **Limites observées** : la politique réseau de l'environnement de développement cloud (registres de paquets uniquement) empêche d'y télécharger une vraie vidéo YouTube — la validation sur du **footage réel de podcast** doit être confirmée sur machine locale : `python -m src.reframe.vertical output/<nom_video>/metadata.json` puis contrôler dans `vertical/preview.html` : (1) visage jamais coupé, (2) cadrage stable quand le locuteur bouge peu (sinon monter `vertical.smoothing_strength`), (3) `face_detection_rate` du manifest > 0.5 sur du footage réel de face, (4) bascule `center_crop` propre sur les plans sans visage. Suivi horizontal uniquement ; un seul visage suivi (pas encore de détection du locuteur actif).
 

@@ -102,15 +102,48 @@ vertical:
   smoothing: true           # Lissage du cadrage (indispensable : evite les a-coups)
   smoothing_strength: 0.7   # 0 = reactif nerveux, 1 = tres lisse et lent
   fallback: center_crop     # Strategie si aucun visage : crop central propre
-  # --- Phase 7 bis : stabilisation du cadrage (anti-saccades) ---
-  # Logique "cameraman" : le cadre ne bouge PAS tant que le visage reste
-  # dans la zone morte, puis glisse a vitesse limitee. Les commandes de
-  # crop sont interpolees a 15 Hz (fini les sauts par paliers de 200 ms).
-  deadzone_ratio: 0.10      # Zone morte : +/- 10% de la largeur du crop
-  max_pan_speed: 180        # Vitesse max de deplacement du cadre (px source/s)
-  fallback_on_jitter: true  # Si le cadrage reste instable, bascule en crop central
-  jitter_threshold: 0.8     # Seuil : inversions de direction par seconde (0.2 = calme,
-                            #   > 1 = ping-pong visible -> fallback)
+  # --- Phase 7 bis v2 : stabilisation du cadrage ---
+  # Philosophie : la sortie doit etre AUSSI FLUIDE que le crop central.
+  # En mode auto, le tracking doit se meriter : si le visage reste
+  # correctement cadre par un simple crop statique, on n'anime pas le
+  # cadre. S'il faut suivre, trajectoire "cameraman" (zone morte +
+  # vitesse limitee) a render_command_fps, et fallback en crop central
+  # des que les metriques de stabilite depassent les seuils du profil.
+  render_command_fps: 30    # Frequence des commandes de crop (30 = pas <= 3 px, invisible)
+  fallback_on_jitter: true  # Active les fallbacks bases sur les metriques de stabilite
+  stability: stable         # Profil par defaut : stable | balanced | follow
+  # Chaque profil regle : la zone morte, la vitesse de panoramique, la
+  # "zone sure" du crop statique (fraction centrale du crop ou le visage
+  # est considere bien cadre -> si le visage y reste 95% du temps, crop
+  # statique direct), et les seuils de fallback.
+  stability_profiles:
+    stable:                 # Priorite absolue a la fluidite (defaut)
+      deadzone_ratio: 0.20
+      max_pan_speed: 90
+      safe_zone_ratio: 0.80         # Zone sure large -> crop statique tres souvent prefere
+      max_average_speed: 40         # px/s de mouvement moyen tolere
+      max_step_px: 4                # Saut max entre deux commandes
+      max_total_distance_ratio: 1.0 # Distance totale max (en largeurs de crop)
+      max_commands_per_second: 12
+      max_stability_score: 20       # visual_stability_score (0 = parfait) tolere
+    balanced:               # Compromis suivi / fluidite
+      deadzone_ratio: 0.15
+      max_pan_speed: 140
+      safe_zone_ratio: 0.60
+      max_average_speed: 80
+      max_step_px: 6
+      max_total_distance_ratio: 2.5
+      max_commands_per_second: 20
+      max_stability_score: 40
+    follow:                 # Suit davantage le visage (sujets tres mobiles)
+      deadzone_ratio: 0.10
+      max_pan_speed: 200
+      safe_zone_ratio: 0.40
+      max_average_speed: 160
+      max_step_px: 8
+      max_total_distance_ratio: 6.0
+      max_commands_per_second: 31
+      max_stability_score: 65
   crf: 20
   preset: medium
 

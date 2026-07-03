@@ -188,11 +188,146 @@ def smooth_series(values: list[float], window_samples: int) -> list[float]:
 # Phase 7 bis : stabilisation du cadrage (anti-saccades)
 # ---------------------------------------------------------------------------
 
-# Frequence des commandes de crop envoyees a FFmpeg. 15 Hz suffit : la
-# vitesse de deplacement etant limitee, chaque pas fait quelques pixels
-# au plus -> mouvement percu comme continu (l'ancien code envoyait une
-# commande par detection, toutes les 200 ms : sauts par paliers visibles).
-COMMAND_RATE = 15.0
+# Frequence par defaut des commandes de crop (surchargable par
+# vertical.render_command_fps) : a 30 Hz avec une vitesse limitee, chaque
+# pas fait <= 3 px -> mouvement percu comme continu.
+COMMAND_RATE = 30.0
+
+# Fraction du clip pendant laquelle le visage doit rester dans la zone
+# sure du crop STATIQUE pour que le mode auto prefere le crop central
+# (tracking inutile = tracking evite : la fluidite d'abord)
+STATIC_OK_FRACTION = 0.95
+
+# Profils de stabilite (surchargables via vertical.stability_profiles,
+# et individuellement via des cles de meme nom au niveau vertical.*)
+DEFAULT_STABILITY_PROFILES = {
+    "stable": {
+        "deadzone_ratio": 0.20, "max_pan_speed": 90, "safe_zone_ratio": 0.80,
+        "max_average_speed": 40, "max_step_px": 4, "max_total_distance_ratio": 1.0,
+        "max_commands_per_second": 12, "max_stability_score": 20,
+    },
+    "balanced": {
+        "deadzone_ratio": 0.15, "max_pan_speed": 140, "safe_zone_ratio": 0.60,
+        "max_average_speed": 80, "max_step_px": 6, "max_total_distance_ratio": 2.5,
+        "max_commands_per_second": 20, "max_stability_score": 40,
+    },
+    "follow": {
+        "deadzone_ratio": 0.10, "max_pan_speed": 200, "safe_zone_ratio": 0.40,
+        "max_average_speed": 160, "max_step_px": 8, "max_total_distance_ratio": 6.0,
+        "max_commands_per_second": 31, "max_stability_score": 65,
+    },
+}
+
+
+def resolve_stability_params(config: dict, stability: str) -> dict:
+    """
+    Parametres effectifs du profil de stabilite : profil integre, puis
+    surcharges de configs (vertical.stability_profiles.<nom>), puis
+    surcharges individuelles au niveau vertical.* (retro-compatibilite,
+    pratique pour les tests).
+    """
+    if stability not in DEFAULT_STABILITY_PROFILES:
+        raise ValueError(
+            f"Profil de stabilite inconnu : {stability} "
+            f"(choix : {', '.join(DEFAULT_STABILITY_PROFILES)})"
+        )
+    params = dict(DEFAULT_STABILITY_PROFILES[stability])
+    params.update(config.get("stability_profiles", {}).get(stability, {}))
+    for key in params:
+        if key in config:
+            params[key] = config[key]
+    return params
+
+
+def static_framing_fraction(centers: list[float], source_width: int,
+                            crop_width: int, safe_zone_ratio: float) -> float:
+    """
+    Fraction du temps ou le visage reste dans la zone sure d'un crop
+    central STATIQUE (bande centrale de safe_zone_ratio x largeur du
+    crop). Proche de 1.0 -> le crop statique cadre deja bien le sujet,
+    le tracking n'apporte aucun gain visuel.
+    """
+    if not centers:
+        return 0.0
+    half_safe = crop_width * safe_zone_ratio / 2
+    crop_center = source_width / 2
+    inside = sum(1 for c in centers if abs(c * source_width - crop_center) <= half_safe)
+    return inside / len(centers)
+
+
+def compute_crop_metrics(times: list[float], positions: list[float],
+                         rate: float, crop_width: int) -> dict:
+    """
+    Metriques de stabilite du cadrage, mesurees sur la trajectoire finale
+    (celle qui sera rendue). visual_stability_score : indice d'INSTABILITE
+    0-100 (0 = plan parfaitement stable, 100 = cadrage insupportable),
+    combinant vitesse moyenne, taille des pas, inversions et densite de
+    commandes.
+    """
+    duration = max(times[-1] - times[0], 1e-6) if len(times) > 1 else 1e-6
+    steps = np.abs(np.diff(positions)) if len(positions) > 1 else np.array([0.0])
+
+    total_distance = float(steps.sum())
+    average_speed = total_distance / duration
+    max_step = float(steps.max())
+    velocities = np.diff(positions) * rate
+    max_acceleration = (
+        float(np.abs(np.diff(velocities)).max()) * rate if len(velocities) > 1 else 0.0
+    )
+    reversals_per_second = compute_jitter_score(times, positions, crop_width * 0.01)
+    command_count = len(dedupe_commands(times, positions)[1])
+    # La premiere commande fixe la position initiale : ce n'est pas du mouvement
+    commands_per_second = max(0, command_count - 1) / duration
+
+    # Composite bornee : chaque terme sature a 1 (150 px/s de mouvement
+    # moyen, pas de 12 px, 1.5 inversion/s ou une commande par frame = 100%)
+    score = 100 * (
+        0.35 * min(1.0, average_speed / 150)
+        + 0.25 * min(1.0, max_step / 12)
+        + 0.25 * min(1.0, reversals_per_second / 1.5)
+        + 0.15 * min(1.0, commands_per_second / 30)
+    )
+    return {
+        "total_crop_distance": round(total_distance, 1),
+        "average_crop_speed": round(average_speed, 1),
+        "max_crop_step_px": round(max_step, 2),
+        "max_crop_acceleration": round(max_acceleration, 1),
+        "command_count": command_count,
+        "reversals_per_second": reversals_per_second,
+        "visual_stability_score": round(score, 1),
+    }
+
+
+def check_stability_thresholds(metrics: dict, params: dict, crop_width: int,
+                               duration: float) -> list[str]:
+    """
+    Compare les metriques aux seuils du profil. Retourne la liste des
+    depassements (vide = tracking assez fluide pour etre rendu).
+    """
+    problems = []
+    max_distance = params["max_total_distance_ratio"] * crop_width
+    if metrics["total_crop_distance"] > max_distance:
+        problems.append(
+            f"total_crop_distance {metrics['total_crop_distance']:.0f}px > {max_distance:.0f}px"
+        )
+    if metrics["average_crop_speed"] > params["max_average_speed"]:
+        problems.append(
+            f"average_crop_speed {metrics['average_crop_speed']:.0f}px/s > {params['max_average_speed']}px/s"
+        )
+    if metrics["max_crop_step_px"] > params["max_step_px"]:
+        problems.append(
+            f"max_crop_step_px {metrics['max_crop_step_px']:.1f} > {params['max_step_px']}"
+        )
+    max_commands = params["max_commands_per_second"] * max(duration, 1e-6)
+    if metrics["command_count"] > max_commands:
+        problems.append(
+            f"command_count {metrics['command_count']} > {max_commands:.0f}"
+        )
+    if metrics["visual_stability_score"] > params["max_stability_score"]:
+        problems.append(
+            f"visual_stability_score {metrics['visual_stability_score']} > {params['max_stability_score']}"
+        )
+    return problems
 
 
 def build_camera_trajectory(
@@ -391,31 +526,45 @@ def render_face_tracking(clip_path: Path, destination: Path, config: dict,
 # ---------------------------------------------------------------------------
 
 def reframe_single_clip(clip_path: Path, destination: Path, config: dict,
-                        method: str = "auto") -> dict:
+                        method: str = "auto", stability: str | None = None) -> dict:
     """
     Reframe un clip en vertical selon la strategie demandee :
-    - "auto"   : suivi de visage si possible ET stable, sinon crop central
-                 (fallback automatique si le jitter depasse le seuil) ;
-    - "face"   : force le suivi de visage (pas de fallback jitter, mais
-                 toujours le fallback en cas d'echec FFmpeg) ;
+    - "auto"   : LA FLUIDITE D'ABORD. Crop central si le visage reste
+                 correctement cadre en statique ; suivi de visage
+                 uniquement s'il est necessaire ET que ses metriques de
+                 stabilite restent sous les seuils du profil ;
+    - "face"   : force le suivi (metriques mesurees mais pas de fallback
+                 de stabilite ; fallback seulement si FFmpeg echoue) ;
     - "center" : crop central direct.
-    Retourne pour le manifest : method_used, requested_method,
-    face_detection_rate, tracking_jitter_score, crop_strategy,
-    et fallback_from / fallback_reason si un fallback a eu lieu.
+    stability : profil "stable" (defaut) | "balanced" | "follow".
+    Retourne method_used, requested_method, stability_profile,
+    face_detection_rate, les metriques de stabilite, crop_strategy,
+    et fallback_from / fallback_reason si applicable.
     """
+    stability = stability or config.get("stability", "stable")
+    params = resolve_stability_params(config, stability)
+
     probe = probe_media(clip_path)
     video_stream = next(s for s in probe["streams"] if s["codec_type"] == "video")
     source_width = video_stream["width"]
     source_height = video_stream["height"]
 
-    def result(method_used, crop_strategy, detection_rate=None, jitter=None,
+    def result(method_used, crop_strategy, detection_rate=None, metrics=None,
                fallback_from=None, fallback_reason=None):
+        metrics = metrics or {}
         info = {
             "method": method_used,          # Compatibilite (== method_used)
             "method_used": method_used,
             "requested_method": method,
+            "stability_profile": stability,
             "face_detection_rate": detection_rate,
-            "tracking_jitter_score": jitter,
+            "tracking_jitter_score": metrics.get("reversals_per_second"),
+            "total_crop_distance": metrics.get("total_crop_distance"),
+            "average_crop_speed": metrics.get("average_crop_speed"),
+            "max_crop_step_px": metrics.get("max_crop_step_px"),
+            "max_crop_acceleration": metrics.get("max_crop_acceleration"),
+            "command_count": metrics.get("command_count"),
+            "visual_stability_score": metrics.get("visual_stability_score"),
             "crop_strategy": crop_strategy,
         }
         if fallback_from:
@@ -434,7 +583,7 @@ def reframe_single_clip(clip_path: Path, destination: Path, config: dict,
     fallback_from = None
     fallback_reason = None
     detection_rate = None
-    jitter = None
+    metrics = None
     want_face = method in ("auto", "face") and config.get("face_detection", True)
     if want_face:
         times, centers, rate = detect_face_centers(
@@ -462,41 +611,69 @@ def reframe_single_clip(clip_path: Path, destination: Path, config: dict,
                 for c in interpolated
             ]
 
-            # --- Phase 7 bis : trajectoire "cameraman" fluide ---
-            deadzone = config.get("deadzone_ratio", 0.10) * crop_width
+            # Trajectoire "cameraman" + metriques (toujours calculees :
+            # elles sont ecrites au manifest quelle que soit la decision)
+            command_fps = float(config.get("render_command_fps", COMMAND_RATE))
+            deadzone = params["deadzone_ratio"] * crop_width
             trajectory_times, trajectory = build_camera_trajectory(
                 times, raw_positions,
                 deadzone=deadzone,
-                max_speed=config.get("max_pan_speed", 180),
+                max_speed=params["max_pan_speed"],
+                rate=command_fps,
             )
-            jitter = compute_jitter_score(
-                trajectory_times, trajectory, min_amplitude=crop_width * 0.01
+            metrics = compute_crop_metrics(
+                trajectory_times, trajectory, command_fps, crop_width
+            )
+            covered = (
+                trajectory_times[-1] - trajectory_times[0]
+                if len(trajectory_times) > 1 else 0.0
             )
 
-            jitter_threshold = config.get("jitter_threshold", 0.8)
-            jitter_fallback = (
-                method == "auto"                              # --method face force le suivi
-                and config.get("fallback_on_jitter", True)
-                and jitter > jitter_threshold
-            )
-            if jitter_fallback:
-                fallback_from = "face_tracking"
-                fallback_reason = (
-                    f"tracking_jitter_score {jitter} > seuil {jitter_threshold}"
+            # --- 1. Le tracking doit se meriter : si le crop statique
+            #     cadre deja bien le visage, il gagne (fluidite parfaite) ---
+            if method == "auto":
+                fraction = static_framing_fraction(
+                    interpolated, source_width, crop_width, params["safe_zone_ratio"]
                 )
-                logger.warning(
-                    "  FALLBACK : cadrage instable (jitter %.2f > %.2f), "
-                    "bascule en crop central pour garantir une video fluide",
-                    jitter, jitter_threshold,
+                if fraction >= STATIC_OK_FRACTION:
+                    fallback_from = "face_tracking"
+                    fallback_reason = (
+                        f"visage correctement cadre par le crop statique "
+                        f"({fraction:.0%} du temps dans la zone sure) : "
+                        "tracking sans gain visuel"
+                    )
+                    logger.info(
+                        "  Crop statique suffisant (visage dans la zone sure "
+                        "%.0f%% du temps) : crop central prefere", fraction * 100,
+                    )
+
+            # --- 2. Seuils de stabilite du profil ---
+            if (fallback_from is None and method == "auto"
+                    and config.get("fallback_on_jitter", True)):
+                problems = check_stability_thresholds(
+                    metrics, params, crop_width, covered
                 )
-            else:
+                if problems:
+                    fallback_from = "face_tracking"
+                    fallback_reason = (
+                        "tracking trop instable pour le profil "
+                        f"'{stability}' : " + " ; ".join(problems)
+                    )
+                    logger.warning(
+                        "  FALLBACK : %s -> crop central (video garantie fluide)",
+                        fallback_reason,
+                    )
+
+            # --- 3. Rendu du suivi ---
+            if fallback_from is None:
                 command_times, command_positions = dedupe_commands(
                     trajectory_times, trajectory
                 )
                 logger.info(
-                    "  Suivi de visage : %.0f%% de detections, jitter %.2f, "
-                    "%d commandes de cadrage",
-                    rate * 100, jitter, len(command_positions),
+                    "  Suivi de visage : %.0f%% de detections, stabilite %.0f/100, "
+                    "%d commandes",
+                    rate * 100, metrics["visual_stability_score"],
+                    len(command_positions),
                 )
                 try:
                     render_face_tracking(
@@ -506,11 +683,10 @@ def reframe_single_clip(clip_path: Path, destination: Path, config: dict,
                     )
                     return result(
                         "face_tracking", "dynamic_face",
-                        detection_rate=detection_rate, jitter=jitter,
+                        detection_rate=detection_rate, metrics=metrics,
                     )
                 except FFmpegError as error:
-                    # Le suivi a echoue a l'ENCODAGE (pas a la detection) :
-                    # on ne fait jamais planter la phase
+                    # Echec a l'ENCODAGE : on ne fait jamais planter la phase
                     fallback_from = "face_tracking"
                     fallback_reason = "echec FFmpeg du rendu face_tracking"
                     logger.warning(
@@ -534,7 +710,7 @@ def reframe_single_clip(clip_path: Path, destination: Path, config: dict,
     render_center_crop(clip_path, destination, config, source_width, source_height)
     return result(
         "center_crop", "static_center",
-        detection_rate=detection_rate, jitter=jitter,
+        detection_rate=detection_rate, metrics=metrics,
         fallback_from=fallback_from, fallback_reason=fallback_reason,
     )
 
@@ -548,10 +724,10 @@ def build_vertical_preview_html(manifest: dict) -> str:
     cards = []
     for clip in manifest["clips"]:
         rate = clip["face_detection_rate"]
-        jitter = clip.get("tracking_jitter_score")
+        stability_score = clip.get("visual_stability_score")
         face_label = f"🎯 suivi visage ({rate:.0%})" if rate else "🎯 suivi visage"
-        if jitter is not None and clip["method"] == "face_tracking":
-            face_label += f" · jitter {jitter}"
+        if stability_score is not None and clip["method"] == "face_tracking":
+            face_label += f" · stabilité {stability_score:.0f}/100 (0=parfait)"
         method_label = {
             "face_tracking": face_label,
             "center_crop": "◻ crop central",
@@ -614,7 +790,7 @@ def build_vertical_preview_html(manifest: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def reframe_clips(source: str, force: bool = False, method: str | None = None,
-                  top: int | None = None) -> Path:
+                  top: int | None = None, stability: str | None = None) -> Path:
     """
     Reframe les clips de la Phase 6 en vertical 9:16 et ecrit
     output/<nom_video>/vertical_manifest.json + la galerie.
@@ -682,7 +858,8 @@ def reframe_clips(source: str, force: bool = False, method: str | None = None,
         logger.info("Reframe #%d : %s ...", clip["rank"], clip["file"])
 
         info = reframe_single_clip(
-            clip_path, destination, vertical_config, method=reframe_method
+            clip_path, destination, vertical_config,
+            method=reframe_method, stability=stability,
         )
 
         probe = probe_media(destination)
@@ -697,8 +874,15 @@ def reframe_clips(source: str, force: bool = False, method: str | None = None,
             "method": info["method_used"],   # Compatibilite ascendante
             "method_used": info["method_used"],
             "requested_method": info["requested_method"],
+            "stability_profile": info["stability_profile"],
             "face_detection_rate": info["face_detection_rate"],
             "tracking_jitter_score": info["tracking_jitter_score"],
+            "total_crop_distance": info["total_crop_distance"],
+            "average_crop_speed": info["average_crop_speed"],
+            "max_crop_step_px": info["max_crop_step_px"],
+            "max_crop_acceleration": info["max_crop_acceleration"],
+            "command_count": info["command_count"],
+            "visual_stability_score": info["visual_stability_score"],
             "crop_strategy": info["crop_strategy"],
             # Presents uniquement si un fallback a eu lieu (jitter trop
             # eleve, echec FFmpeg, ou detection insuffisante en --method face)
@@ -748,9 +932,15 @@ def main() -> int:
     )
     parser.add_argument(
         "--method", choices=["auto", "face", "center"], default=None,
-        help="auto (defaut) : suivi de visage si possible et stable, sinon crop "
-             "central | face : force le suivi (ignore le fallback jitter) | "
+        help="auto (defaut) : crop central si suffisant, suivi de visage "
+             "uniquement si necessaire ET stable | face : force le suivi | "
              "center : crop central direct",
+    )
+    parser.add_argument(
+        "--stability", choices=["stable", "balanced", "follow"], default=None,
+        help="stable (defaut) : fluidite maximale, tracking seulement s'il est "
+             "indispensable | balanced : compromis | follow : suit davantage "
+             "le visage",
     )
     parser.add_argument(
         "--top", type=int, default=None,
@@ -764,7 +954,8 @@ def main() -> int:
 
     try:
         manifest_path = reframe_clips(
-            args.source, force=args.force, method=args.method, top=args.top
+            args.source, force=args.force, method=args.method, top=args.top,
+            stability=args.stability,
         )
     except (FFmpegError, FileNotFoundError, ValueError, RuntimeError) as error:
         logger.error("%s", error)
