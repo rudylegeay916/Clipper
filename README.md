@@ -248,6 +248,19 @@ start output\<nom_video>\subtitled\preview.html
 
 Résultats : `output/<nom_video>/subtitled/subtitled_XX_....mp4`, fichiers `.ass` conservés dans `subtitled/ass/` (éditables puis re-burnables), `subtitles_manifest.json`, galerie `subtitled/preview.html`. Styles dans `configs/subtitle_styles.yaml` (défaut : `bold_classic`) ; réglages fins dans `config.yaml` (`subtitles` : `lead_in`, `hold`, `group_gap_threshold`). Si le burn karaoke échoue, fallback automatique en version groupée non-karaoke (tracé dans le manifest). Pour la police Montserrat ExtraBold : déposer le `.ttf` ([licence libre OFL](https://fonts.google.com/specimen/Montserrat)) dans `assets/fonts/` — sinon police de substitution.
 
+### Appliquer un template de montage (Phase 9)
+
+Transforme les clips sous-titrés en clips finaux : hook textuel en ouverture, barre de progression, zoom lent, watermark optionnel :
+
+```powershell
+# Prérequis : sous-titres faits (Phase 8)
+python -m src.templates.apply output/<nom_video>/metadata.json
+python -m src.templates.apply output/<nom_video>/metadata.json --template punchy_short
+start output\<nom_video>\final\preview.html
+```
+
+Résultats : `output/<nom_video>/final/final_XX_....mp4`, `final_manifest.json` (effets appliqués, watermark, fallbacks), galerie `final/preview.html`. Effets activables dans `config.yaml` (`templates.default`), apparence des templates (`clean_social` sobre, `punchy_short` dynamique) dans `configs/templates.yaml`. Logo : renseigner `templates.default.logo_path` (ignoré proprement si absent). Si un rendu échoue, le clip sous-titré est copié tel quel en final (tracé dans le manifest) — la phase produit toujours ses sorties.
+
 ### Générer une vidéo de test
 
 Pas de vidéo sous la main ? Générez-en une (mire animée + bip audio) :
@@ -333,7 +346,7 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 | 6 | Découpage automatique | ✅ Fait |
 | 7 | Reframe vertical intelligent (9:16) | ✅ Fait |
 | 8 | Sous-titres animés karaoke (ASS) | ✅ Fait |
-| 9 | Templates de montage | À venir |
+| 9 | Templates de montage (hook, barre, zoom, watermark) | ✅ Fait |
 | 10 | Métadonnées (titres, hashtags) | À venir |
 | 11 | Score de visibilité | À venir |
 | 12 | Export multi-plateforme | À venir |

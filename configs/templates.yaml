@@ -1,43 +1,44 @@
 # ============================================================
-# Phase 9 - Templates de montage automatique
+# Phase 9 - Templates de montage (parametres visuels)
 # ============================================================
-# Chaque template definit un "style" de montage reutilisable.
-# Pour le MVP, seul le template "minimal" est utilise (aucun
-# effet). Les autres options seront activees en Phase 9.
+# Le template actif et les effets actives se choisissent dans
+# config.yaml (section templates.default). Ici : l'apparence de
+# chaque template, modifiable sans toucher au code.
 # ============================================================
-
-# Template actif par defaut
-default_template: minimal
 
 templates:
 
-  # MVP : aucun effet, juste le clip vertical + sous-titres
-  minimal:
-    ken_burns: false             # Zoom progressif leger
-    zoom_punch: false            # Zoom-punch sur les moments intenses
-    hook_overlay: false          # Texte accrocheur dans les 2 premieres secondes
-    watermark:
-      enabled: false
-    background_music:
-      enabled: false
+  # Sobre et lisible : hook discret, barre fine, zoom leger
+  clean_social:
+    hook:
+      fontsize_ratio: 0.038    # Taille du hook (fraction de la hauteur video)
+      y_ratio: 0.13            # Position verticale (fraction depuis le haut, zone sure)
+      color: white
+      border: 4                # Contour noir (lisibilite)
+      box: false               # Pas de fond
+      uppercase: false
+      max_chars_per_line: 22
+    progress_bar:
+      height: 6
+      color: "white@0.65"
+    zoom:
+      rate: 0.0005             # Zoom par frame (0.0005 x 30fps = +1.5%/s)
+      max: 1.05                # Zoom maximal (5%)
 
-  # Phase 9 : montage dynamique complet
-  dynamic:
-    ken_burns: true
-    ken_burns_zoom: 1.08         # Zoom final (1.0 = aucun zoom)
-    zoom_punch: true
-    zoom_punch_scale: 1.12       # Intensite du zoom-punch
-    hook_overlay: true
-    hook_duration: 2.0           # Duree d'affichage du hook (secondes)
-    hook_font_size: 80
-    hook_position_vertical: 25   # % depuis le haut
-    watermark:
-      enabled: false
-      file: assets/logo/logo.png
-      position: top_right        # top_left | top_right | bottom_left | bottom_right
-      opacity: 0.7
-      scale: 0.12                # Taille relative a la largeur de la video
-    background_music:
-      enabled: false
-      folder: assets/music
-      volume_db: -22             # Volume de la musique sous la voix
+  # Plus punchy : hook massif sur fond, barre visible, zoom marque
+  punchy_short:
+    hook:
+      fontsize_ratio: 0.050
+      y_ratio: 0.11
+      color: yellow
+      border: 5
+      box: true
+      box_color: "black@0.55"
+      uppercase: true
+      max_chars_per_line: 16
+    progress_bar:
+      height: 10
+      color: "yellow@0.8"
+    zoom:
+      rate: 0.0009
+      max: 1.10
