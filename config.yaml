@@ -80,6 +80,7 @@ clips:
   margin_after: 0.3         # Marge ajoutee apres la fin du clip (secondes)
   max_clips_per_video: 10   # Nombre maximal de clips generes par video source
   min_score: 40             # Score minimal (0-100) pour retenir un clip candidat
+  max_overlap: 0.25         # Chevauchement maximal tolere entre deux clips retenus (0-1)
 
 # --- Phase 8 : sous-titres ---
 subtitles:

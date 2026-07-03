@@ -8,9 +8,48 @@
 
 # --- Poids des familles de signaux ---
 weights:
-  text: 0.45      # Signaux textuels (transcription)
-  audio: 0.35     # Signaux audio (volume, rythme, rires)
-  structure: 0.20 # Signaux de structure (densite, duree)
+  text: 0.35      # Signaux textuels (transcription)
+  audio: 0.25     # Signaux audio (volume, rythme, rires)
+  structure: 0.15 # Signaux de structure (densite, duree)
+  hook: 0.25      # Retention : le hook doit arriver dans les 3 premieres secondes
+
+# --- Phase 5 bis : signaux de hook (retention) ---
+hook_signals:
+  strong_within_seconds: 3.0   # Hook ideal : 1er signal fort avant 3 s -> score plein
+  late_after_seconds: 5.0      # Au-dela de 5 s, le hook est considere tardif (penalite)
+  no_hook_baseline: 20         # Score de base si aucun signal fort dans le clip
+
+  # Penalites (points retires du sous-score hook, 0-100)
+  weak_opening_penalty: 40     # Le clip commence par une phrase molle (bonjour, alors...)
+  context_dependent_penalty: 20  # Le debut depend de ce qui precede (donc, du coup...)
+  filler_start_penalty: 20     # Trop de remplissage dans les 8 premiers mots (>= 2)
+
+  # Demarrages mous : penalise si le clip COMMENCE par un de ces mots/expressions
+  weak_openers:
+    fr: [bonjour, salut, coucou, bienvenue, alors, donc, "voilà", bref, "du coup",
+         "comme je disais", "on disait", euh, bah, ben, "au fait"]
+    en: [hello, hi, hey, welcome, so, anyway, "as i said", um, uh, okay, alright, well]
+
+  # Marqueurs de dependance au contexte precedent (debut incomprehensible seul)
+  context_markers:
+    fr: ["du coup", "c'est pour ça", "comme je disais", "à cause de ça", "et donc",
+         "par contre", "en plus de ça", "cette histoire", "ce truc-là"]
+    en: ["that's why", "so that's", "as i said", "because of that", "which is why",
+         "on top of that", "that thing"]
+
+  # Contradictions / retournements : excellents hooks
+  contradiction_markers:
+    fr: ["mais en fait", "en réalité", "contrairement à", "personne ne", "tout le monde pense",
+         "la vérité c'est", "ce qu'on ne vous dit pas", "arrêtez de", "c'est faux"]
+    en: ["but actually", "in reality", "nobody tells", "everyone thinks", "the truth is",
+         "stop doing", "that's wrong", "contrary to"]
+
+# --- Phase 5 bis : recentrage automatique sur le moment fort ---
+recenter:
+  enabled: true
+  trigger_offset: 3.0          # Recentre si le 1er signal fort arrive apres X secondes
+  min_lead: 0.5                # Contexte minimal garde avant le hook (secondes)
+  max_lead: 3.0                # Contexte maximal garde avant le hook (secondes)
 
 # --- Signaux textuels ---
 text_signals:
