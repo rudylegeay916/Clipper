@@ -15,15 +15,21 @@ import json
 import pytest
 
 from src.reframe.vertical import (
+    build_camera_trajectory,
     build_vertical_preview_html,
     classify_aspect,
+    compute_crop_metrics,
+    compute_jitter_score,
+    dedupe_commands,
     detect_face_centers,
     format_filter_path,
     interpolate_missing,
     reframe_clips,
     reframe_single_clip,
     render_face_tracking,
+    resolve_stability_params,
     smooth_series,
+    static_framing_fraction,
 )
 from src.utils.ffmpeg import FFmpegError, probe_media, run_ffmpeg
 
@@ -66,6 +72,65 @@ def test_smooth_series_reduces_jitter():
     smoothed = smooth_series(jittery, window_samples=5)
     assert max(smoothed) - min(smoothed) < 200        # Amplitude reduite
     assert sum(smoothed) / len(smoothed) == pytest.approx(200, abs=20)  # Pas de derive
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 bis : trajectoire "cameraman", jitter, deduplication
+# ---------------------------------------------------------------------------
+
+def test_camera_trajectory_holds_in_deadzone():
+    """Une cible qui oscille DANS la zone morte ne fait pas bouger la
+    camera d'un seul pixel (plan parfaitement fixe)."""
+    times = [i * 0.2 for i in range(25)]                 # 5 s a 5 Hz
+    targets = [200 + (15 if i % 2 else -15) for i in range(25)]  # Oscille +/-15 px
+
+    grid, positions = build_camera_trajectory(times, targets, deadzone=40, max_speed=180)
+
+    assert max(positions) - min(positions) < 1.0         # Camera immobile
+    # Et donc : une seule commande sendcmd apres deduplication
+    command_times, command_positions = dedupe_commands(grid, positions)
+    assert len(command_positions) == 1
+
+
+def test_camera_trajectory_speed_limited():
+    """Un saut brutal de la cible produit un GLISSEMENT borne en vitesse,
+    jamais un saut de cadre."""
+    times = [0.0, 0.2, 0.4, 0.6, 4.0]
+    targets = [0, 0, 300, 300, 300]                      # Saut de 300 px a t=0.4
+
+    grid, positions = build_camera_trajectory(times, targets, deadzone=20, max_speed=150)
+
+    steps = [abs(b - a) for a, b in zip(positions, positions[1:])]
+    assert max(steps) <= 150 / 15.0 + 1e-6               # <= vitesse max par pas (15 Hz)
+    assert positions[-1] == pytest.approx(280, abs=2)    # Converge vers cible - deadzone
+    # Trajectoire monotone : le glissement ne revient jamais en arriere
+    assert all(b >= a - 1e-9 for a, b in zip(positions, positions[1:]))
+
+
+def test_jitter_score_low_on_smooth_glide():
+    """Un glissement franc dans une seule direction = jitter ~0."""
+    times = [i / 15 for i in range(60)]
+    positions = [i * 5.0 for i in range(60)]             # Glissement regulier
+    assert compute_jitter_score(times, positions, min_amplitude=4) == 0.0
+
+
+def test_jitter_score_high_on_ping_pong():
+    """Un cadrage qui ping-pong = jitter eleve (> 1 inversion/s)."""
+    times = [i * 0.2 for i in range(30)]                 # 6 s
+    positions = [0 if i % 2 else 80 for i in range(30)]  # Aller-retour permanent
+    score = compute_jitter_score(times, positions, min_amplitude=4)
+    assert score > 1.0
+
+
+def test_dedupe_commands_only_on_change():
+    """Commandes emises uniquement quand la position (pixel) change."""
+    times = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+    positions = [10.2, 10.4, 10.3, 50.0, 50.1, 90.0]     # 10 -> 50 -> 90
+
+    command_times, command_positions = dedupe_commands(times, positions)
+
+    assert command_positions == [10, 50, 90]
+    assert command_times == [0.0, 0.3, 0.5]
 
 
 # ---------------------------------------------------------------------------
@@ -133,13 +198,200 @@ def test_face_tracking_render_failure_falls_back(monkeypatch, horizontal_clip, t
     destination = tmp_path / "fallback_render.mp4"
     info = reframe_single_clip(horizontal_clip, destination, VERTICAL_CONFIG, method="face")
 
-    assert info["method"] == "center_crop"
+    assert info["method_used"] == "center_crop"
+    assert info["requested_method"] == "face"
     assert info["fallback_from"] == "face_tracking"
+    assert "FFmpeg" in info["fallback_reason"]
     assert info["face_detection_rate"] == 1.0
     assert destination.is_file()
     probe = probe_media(destination)
     stream = next(s for s in probe["streams"] if s["codec_type"] == "video")
     assert (stream["width"], stream["height"]) == (1080, 1920)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 bis v2 : metriques, profils et mode auto conservateur
+# ---------------------------------------------------------------------------
+
+# Detection simulee instable : la cible saute entre 25% et 75% de la
+# largeur toutes les 0.4 s -> cadrage ping-pong garanti
+UNSTABLE_CENTERS = (
+    [i * 0.2 for i in range(30)],                       # 6 s a 5 Hz
+    [0.25 if (i // 2) % 2 == 0 else 0.75 for i in range(30)],
+    1.0,
+)
+
+# Config sans lissage pour que l'instabilite atteigne la trajectoire
+# (surcharges individuelles au niveau vertical.* : prioritaires sur le profil)
+UNSTABLE_TEST_CONFIG = {
+    **VERTICAL_CONFIG, "smoothing": False,
+    "deadzone_ratio": 0.05, "max_pan_speed": 600,
+    "fallback_on_jitter": True,
+}
+
+
+def test_resolve_stability_params():
+    """Profils integres + surcharges individuelles ; profil inconnu = erreur."""
+    params = resolve_stability_params({}, "stable")
+    assert params["deadzone_ratio"] == 0.20
+    assert params["max_pan_speed"] == 90
+    overridden = resolve_stability_params({"max_pan_speed": 55}, "stable")
+    assert overridden["max_pan_speed"] == 55
+    with pytest.raises(ValueError, match="stable, balanced, follow"):
+        resolve_stability_params({}, "turbo")
+
+
+def test_compute_crop_metrics_static_is_perfect():
+    """Trajectoire immobile : toutes les metriques a zero."""
+    times = [i / 30 for i in range(90)]
+    metrics = compute_crop_metrics(times, [200.0] * 90, rate=30, crop_width=405)
+    assert metrics["total_crop_distance"] == 0.0
+    assert metrics["average_crop_speed"] == 0.0
+    assert metrics["max_crop_step_px"] == 0.0
+    assert metrics["command_count"] == 1
+    assert metrics["visual_stability_score"] == 0.0
+
+
+def test_compute_crop_metrics_values():
+    """Glissement regulier de 3 px/pas a 30 Hz : valeurs connues."""
+    times = [i / 30 for i in range(31)]                  # 1 s
+    positions = [i * 3.0 for i in range(31)]             # 90 px parcourus
+    metrics = compute_crop_metrics(times, positions, rate=30, crop_width=405)
+    assert metrics["total_crop_distance"] == 90.0
+    assert metrics["average_crop_speed"] == pytest.approx(90.0, rel=0.01)
+    assert metrics["max_crop_step_px"] == 3.0
+    assert metrics["command_count"] == 31
+
+
+def test_static_framing_fraction():
+    """Visage centre -> 1.0 ; visage au bord -> 0.0."""
+    centered = [0.5, 0.52, 0.48, 0.51]
+    assert static_framing_fraction(centered, 1280, 405, safe_zone_ratio=0.8) == 1.0
+    edge = [0.05, 0.06, 0.05]
+    assert static_framing_fraction(edge, 1280, 405, safe_zone_ratio=0.8) == 0.0
+
+
+def test_render_command_fps_30():
+    """La trajectoire est echantillonnee a 30 Hz (defaut render_command_fps)."""
+    times = [0.0, 1.0, 2.0]
+    grid, _ = build_camera_trajectory(times, [0, 0, 0], deadzone=10,
+                                      max_speed=90, rate=30.0)
+    assert len(grid) == 61                               # 2 s x 30 Hz + 1
+    import yaml
+    config = yaml.safe_load(open("config.yaml", encoding="utf-8"))
+    assert config["vertical"]["render_command_fps"] == 30
+    assert config["vertical"]["stability"] == "stable"
+
+
+def test_quasi_static_speaker_prefers_center_crop(monkeypatch, horizontal_clip, tmp_path):
+    """Test produit n°1 : un locuteur quasi statique (au centre) doit
+    donner un crop central — le tracking n'apporte aucun gain visuel."""
+    nearly_static = (
+        [i * 0.2 for i in range(30)],
+        [0.5 + (0.01 if i % 2 else -0.01) for i in range(30)],
+        1.0,
+    )
+    monkeypatch.setattr(
+        "src.reframe.vertical.detect_face_centers", lambda *a, **k: nearly_static,
+    )
+
+    destination = tmp_path / "static_speaker.mp4"
+    info = reframe_single_clip(horizontal_clip, destination, VERTICAL_CONFIG,
+                               method="auto", stability="stable")
+
+    assert info["method_used"] == "center_crop"
+    assert info["fallback_from"] == "face_tracking"
+    assert "statique" in info["fallback_reason"]
+    assert destination.is_file()
+
+
+def test_micro_movements_fall_back_center(monkeypatch, horizontal_clip, tmp_path):
+    """Test produit n°2 : un tracking plein de micro-mouvements doit
+    finir en center_crop (via zone sure ou seuils), jamais en rendu agite."""
+    monkeypatch.setattr(
+        "src.reframe.vertical.detect_face_centers",
+        lambda *a, **k: UNSTABLE_CENTERS,
+    )
+
+    destination = tmp_path / "micro_movements.mp4"
+    info = reframe_single_clip(horizontal_clip, destination, UNSTABLE_TEST_CONFIG,
+                               method="auto", stability="stable")
+
+    assert info["method_used"] == "center_crop"
+    assert info["fallback_from"] == "face_tracking"
+    assert info["visual_stability_score"] is not None
+    assert destination.is_file()
+    probe = probe_media(destination)
+    stream = next(s for s in probe["streams"] if s["codec_type"] == "video")
+    assert (stream["width"], stream["height"]) == (1080, 1920)
+
+
+def test_unstable_tracking_exceeds_thresholds(monkeypatch, horizontal_clip, tmp_path):
+    """Le chemin 'seuils de stabilite' se declenche bien quand le visage
+    sort de la zone sure ET que la trajectoire est trop agitee."""
+    # Oscillation LARGE (0.15 <-> 0.85) : hors zone sure ET tres instable
+    wild = (
+        [i * 0.2 for i in range(30)],
+        [0.15 if (i // 2) % 2 == 0 else 0.85 for i in range(30)],
+        1.0,
+    )
+    monkeypatch.setattr(
+        "src.reframe.vertical.detect_face_centers", lambda *a, **k: wild,
+    )
+
+    destination = tmp_path / "wild.mp4"
+    info = reframe_single_clip(horizontal_clip, destination, UNSTABLE_TEST_CONFIG,
+                               method="auto", stability="stable")
+
+    assert info["method_used"] == "center_crop"
+    assert "instable" in info["fallback_reason"]
+    assert info["average_crop_speed"] > 40                # Metrique ecrite
+    assert info["tracking_jitter_score"] > 0.8
+
+
+def test_method_face_bypasses_stability_fallbacks(monkeypatch, horizontal_clip, tmp_path):
+    """--method face force le suivi meme instable (metriques mesurees et
+    tracees, mais pas de fallback : choix explicite de l'utilisateur)."""
+    monkeypatch.setattr(
+        "src.reframe.vertical.detect_face_centers",
+        lambda *a, **k: UNSTABLE_CENTERS,
+    )
+
+    destination = tmp_path / "forced_face.mp4"
+    info = reframe_single_clip(horizontal_clip, destination, UNSTABLE_TEST_CONFIG,
+                               method="face")
+
+    assert info["method_used"] == "face_tracking"
+    assert info["tracking_jitter_score"] > 0.8   # Mesure quand meme
+    assert "fallback_from" not in info
+    assert destination.is_file()
+
+
+def test_stable_vs_follow_differentiation(monkeypatch, horizontal_clip, tmp_path):
+    """Test produit n°3 : auto privilegie la fluidite. Un locuteur qui
+    derive lentement mais surement : profil stable -> center_crop
+    (mouvement permanent = genant) ; profil follow -> face_tracking."""
+    # Derive continue de 30% a 70% de la largeur sur 6 s (~85 px/s)
+    drifting = (
+        [i * 0.2 for i in range(30)],
+        [0.30 + 0.40 * i / 29 for i in range(30)],
+        1.0,
+    )
+    monkeypatch.setattr(
+        "src.reframe.vertical.detect_face_centers", lambda *a, **k: drifting,
+    )
+
+    stable_dest = tmp_path / "drift_stable.mp4"
+    stable_info = reframe_single_clip(horizontal_clip, stable_dest, VERTICAL_CONFIG,
+                                      method="auto", stability="stable")
+    assert stable_info["method_used"] == "center_crop"
+    assert stable_info["fallback_reason"]                 # Raison detaillee tracee
+
+    follow_dest = tmp_path / "drift_follow.mp4"
+    follow_info = reframe_single_clip(horizontal_clip, follow_dest, VERTICAL_CONFIG,
+                                      method="auto", stability="follow")
+    assert follow_info["method_used"] == "face_tracking"
+    assert follow_info["max_crop_step_px"] <= 8           # Toujours borne et fluide
 
 
 # ---------------------------------------------------------------------------
@@ -318,9 +570,17 @@ def test_reframe_clips_manifest_and_preview(fake_output_dir):
     assert manifest["clip_count"] == 1
     clip = manifest["clips"][0]
     for field in ("rank", "source_clip", "vertical_file", "width", "height",
-                  "duration", "method", "face_detection_rate", "crop_strategy",
-                  "score", "hook_text", "suggested_title", "platform_fit"):
+                  "duration", "method", "method_used", "requested_method",
+                  "stability_profile", "tracking_jitter_score",
+                  "total_crop_distance", "average_crop_speed", "max_crop_step_px",
+                  "max_crop_acceleration", "command_count",
+                  "visual_stability_score", "face_detection_rate",
+                  "crop_strategy", "score", "hook_text", "suggested_title",
+                  "platform_fit"):
         assert field in clip, f"Champ manquant dans le manifest : {field}"
+    assert clip["requested_method"] == "auto"      # Mode par defaut
+    assert clip["method_used"] == clip["method"]
+    assert clip["stability_profile"] == "stable"   # Profil par defaut
     assert clip["width"] == 1080
     assert clip["height"] == 1920
     assert clip["vertical_file"].startswith("vertical_01_")
