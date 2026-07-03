@@ -91,6 +91,20 @@ cutting:
                             #   reencoderont encore, on garde de la marge)
   encode_preset: veryfast
 
+# --- Phase 7 : reframe vertical intelligent ---
+vertical:
+  width: 1080
+  height: 1920
+  fps: source               # source = conserve le fps du clip | ou un nombre (30)
+  face_detection: true      # Suivi de visage mediapipe (sinon crop central)
+  detection_sample_fps: 5   # Echantillons de detection par seconde (5 suffit, rapide)
+  min_detection_rate: 0.2   # Sous ce taux de detection, bascule en crop central
+  smoothing: true           # Lissage du cadrage (indispensable : evite les a-coups)
+  smoothing_strength: 0.7   # 0 = reactif nerveux, 1 = tres lisse et lent
+  fallback: center_crop     # Strategie si aucun visage : crop central propre
+  crf: 20
+  preset: medium
+
 # --- Phase 8 : sous-titres ---
 subtitles:
   style: bold_classic       # Nom d'un style defini dans configs/subtitle_styles.yaml

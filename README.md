@@ -206,6 +206,26 @@ start output\<nom_video>\clips\preview.html
 
 Résultats : clips dans `output/<nom_video>/clips/` (nommés `clip_<rang>_score<score>_<slug>.mp4`), récapitulatif `clips_manifest.json`, galerie de prévisualisation `clips/preview.html`. Mode de coupe réglable dans `config.yaml` (section `cutting`) : `auto` copie sans réencodage quand une keyframe tombe près du début voulu, sinon réencode pour un début précis à la frame (critique pour le hook).
 
+### Reframe vertical 9:16 (Phase 7)
+
+Transforme les clips bruts en vertical 1080×1920 avec suivi du visage principal (mediapipe) et cadrage lissé ; crop central propre si pas de visage ; les clips déjà verticaux ne sont pas recadrés :
+
+```powershell
+# Prérequis : clips découpés (Phase 6)
+python -m src.reframe.vertical output/<nom_video>/metadata.json
+
+# Forcer le crop central (plus rapide, pas de détection)
+python -m src.reframe.vertical output/<nom_video>/metadata.json --method center
+
+# Les 3 meilleurs seulement / régénérer
+python -m src.reframe.vertical output/<nom_video>/metadata.json --top 3 --force
+
+# Ouvrir la galerie verticale (Windows)
+start output\<nom_video>\vertical\preview.html
+```
+
+Résultats : `output/<nom_video>/vertical/vertical_<rang>_score<score>_<slug>.mp4`, récapitulatif `vertical_manifest.json` (méthode et taux de détection par clip), galerie `vertical/preview.html`. Réglages dans `config.yaml` (section `vertical` : lissage, seuils, qualité).
+
 ### Générer une vidéo de test
 
 Pas de vidéo sous la main ? Générez-en une (mire animée + bip audio) :
@@ -270,7 +290,7 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 | 5 | Scoring des moments forts | ✅ Fait |
 | 5 bis | Scoring rétention (hook + recentrage) | ✅ Fait |
 | 6 | Découpage automatique | ✅ Fait |
-| 7 | Reframe vertical intelligent | À venir |
+| 7 | Reframe vertical intelligent (9:16) | ✅ Fait |
 | 8 | Sous-titres animés | À venir |
 | 9 | Templates de montage | À venir |
 | 10 | Métadonnées (titres, hashtags) | À venir |
