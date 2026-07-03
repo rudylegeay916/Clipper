@@ -17,8 +17,13 @@ python-dotenv>=1.0           # Chargement du fichier .env (cles API optionnelles
 # --- Tests ---
 pytest>=8.0
 
+# --- Phase 7 : reframe vertical ---
+# Pin < 0.10.30 : les versions suivantes ont supprime l'API solutions
+# (modeles embarques, zero telechargement) au profit d'une API qui exige
+# de telecharger les modeles a part
+mediapipe>=0.10,<0.10.30
+
 # --- Phases ulterieures (decommenter au moment voulu) ---
-# mediapipe>=0.10            # Phase 7 : detection de visages pour le reframe intelligent
 # scenedetect>=0.6           # Phase 4 (option) : detection de changements de plan
 # anthropic>=0.40            # Phase 10 (option) : generation titres/hashtags via API Claude
 # streamlit>=1.35            # Phase 14 : interface web
