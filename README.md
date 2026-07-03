@@ -278,6 +278,21 @@ Le pipeline ne refait jamais un travail déjà fait : si `output/<video>/metadat
 
 Le pipeline fonctionne entièrement en local. Seule la génération de titres/hashtags (Phase 10) peut optionnellement utiliser l'API Claude : copier `.env.example` en `.env` et y renseigner la clé.
 
+## Rapport de validation — Phase 7 (reframe vertical)
+
+**Version MediaPipe réellement utilisée : 0.10.21** (`pip freeze` → `mediapipe==0.10.21`, `mp.solutions` présent). Le pin `mediapipe>=0.10,<0.10.30` de `requirements.txt` se résout bien vers 0.10.21 — la version suivante publiée (0.10.30) supprime l'API `solutions` à modèles embarqués. La mention de 0.10.35 dans l'historique correspond à la première installation (non épinglée) qui a justement révélé ce problème.
+
+**Clips testés en environnement de développement : 5** — 3 clips construits avec de **vraies photos de visages humains** (scikit-image) animées, couvrant les trois chemins, + 2 clips de la démo podcast (mire, sans visage) :
+
+| Clip | Contenu | Méthode obtenue | face_detection_rate | Vérification objective (re-détection sur le rendu) |
+|---|---|---|---|---|
+| A | vrai visage en mouvement latéral + oscillation | `face_tracking` | 1.0 | centre moyen x=0.52, écart-type 0.019 (stable), coupé 0/24 |
+| B | aucun visage (texture) | `center_crop` (fallback) | 0.0 | fallback déclenché proprement, rendu 1080×1920 correct |
+| C | deux visages (grand + petit) | `face_tracking` | 1.0 | visage principal centré (x=0.50, σ=0.009), secondaire hors cadre, coupé 0/24 |
+| demo 1-2 | mire sans visage | `center_crop` | 0.0 | fallback, sortie conforme |
+
+**Limites observées** : la politique réseau de l'environnement de développement cloud (registres de paquets uniquement) empêche d'y télécharger une vraie vidéo YouTube — la validation sur du **footage réel de podcast** doit être confirmée sur machine locale : `python -m src.reframe.vertical output/<nom_video>/metadata.json` puis contrôler dans `vertical/preview.html` : (1) visage jamais coupé, (2) cadrage stable quand le locuteur bouge peu (sinon monter `vertical.smoothing_strength`), (3) `face_detection_rate` du manifest > 0.5 sur du footage réel de face, (4) bascule `center_crop` propre sur les plans sans visage. Suivi horizontal uniquement ; un seul visage suivi (pas encore de détection du locuteur actif).
+
 ## Avancement
 
 | Phase | Contenu | Statut |
