@@ -42,7 +42,13 @@ import numpy as np
 
 from src.ingestion.ingest import ingest
 from src.utils.config import load_config
-from src.utils.ffmpeg import FFmpegError, parse_frame_rate, probe_media, run_ffmpeg
+from src.utils.ffmpeg import (
+    FFmpegError,
+    format_filter_path,  # Re-exporte ici : utilise par sendcmd et les tests
+    parse_frame_rate,
+    probe_media,
+    run_ffmpeg,
+)
 from src.utils.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -465,23 +471,6 @@ def render_center_crop(clip_path: Path, destination: Path, config: dict,
         *_encode_args(config),
         destination,
     ])
-
-
-def format_filter_path(path: Path | str) -> str:
-    """
-    Formate un chemin de fichier pour un argument de filtre FFmpeg
-    (ex : sendcmd=f=...). Le parseur de filtergraph consomme les '\\'
-    et traite ':' comme separateur d'options : un chemin Windows brut
-    (C:\\Users\\...) casse le graphe avec "No option name near ...".
-    Recette validee empiriquement (Linux et Windows partagent le meme
-    parseur) : slashes avant, quotes simples autour de la valeur, et
-    colon echappe en \\: A L'INTERIEUR des quotes.
-    'C:\\Users\\x\\test.cmd' -> 'C\\:/Users/x/test.cmd' (entre quotes)
-    """
-    text = str(path).replace("\\", "/")
-    text = text.replace("'", r"'\''")   # Apostrophe dans le chemin (rare)
-    text = text.replace(":", r"\:")
-    return f"'{text}'"
 
 
 def render_face_tracking(clip_path: Path, destination: Path, config: dict,

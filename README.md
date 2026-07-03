@@ -231,6 +231,23 @@ start output\<nom_video>\vertical\preview.html
 
 Résultats : `output/<nom_video>/vertical/vertical_<rang>_score<score>_<slug>.mp4`, récapitulatif `vertical_manifest.json` (méthode et taux de détection par clip), galerie `vertical/preview.html`. Réglages dans `config.yaml` (section `vertical` : lissage, seuils, qualité).
 
+### Sous-titrer les clips (Phase 8)
+
+Burn des sous-titres karaoke mot par mot (ASS/libass) dans les clips verticaux :
+
+```powershell
+# Prérequis : transcription (3), découpage (6) et reframe (7) faits
+python -m src.subtitles.burn output/<nom_video>/metadata.json
+
+# Choisir un style, limiter aux meilleurs, lister les styles
+python -m src.subtitles.burn output/<nom_video>/metadata.json --style pop_highlight --top 3
+python -m src.subtitles.burn --list-styles
+
+start output\<nom_video>\subtitled\preview.html
+```
+
+Résultats : `output/<nom_video>/subtitled/subtitled_XX_....mp4`, fichiers `.ass` conservés dans `subtitled/ass/` (éditables puis re-burnables), `subtitles_manifest.json`, galerie `subtitled/preview.html`. Styles dans `configs/subtitle_styles.yaml` (défaut : `bold_classic`) ; réglages fins dans `config.yaml` (`subtitles` : `lead_in`, `hold`, `group_gap_threshold`). Si le burn karaoke échoue, fallback automatique en version groupée non-karaoke (tracé dans le manifest). Pour la police Montserrat ExtraBold : déposer le `.ttf` ([licence libre OFL](https://fonts.google.com/specimen/Montserrat)) dans `assets/fonts/` — sinon police de substitution.
+
 ### Générer une vidéo de test
 
 Pas de vidéo sous la main ? Générez-en une (mire animée + bip audio) :
@@ -315,7 +332,7 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 | 5 bis | Scoring rétention (hook + recentrage) | ✅ Fait |
 | 6 | Découpage automatique | ✅ Fait |
 | 7 | Reframe vertical intelligent (9:16) | ✅ Fait |
-| 8 | Sous-titres animés | À venir |
+| 8 | Sous-titres animés karaoke (ASS) | ✅ Fait |
 | 9 | Templates de montage | À venir |
 | 10 | Métadonnées (titres, hashtags) | À venir |
 | 11 | Score de visibilité | À venir |
