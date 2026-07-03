@@ -261,6 +261,18 @@ start output\<nom_video>\final\preview.html
 
 Résultats : `output/<nom_video>/final/final_XX_....mp4`, `final_manifest.json` (effets appliqués, watermark, fallbacks), galerie `final/preview.html`. Effets activables dans `config.yaml` (`templates.default`), apparence des templates (`clean_social` sobre, `punchy_short` dynamique) dans `configs/templates.yaml`. Logo : renseigner `templates.default.logo_path` (ignoré proprement si absent). Si un rendu échoue, le clip sous-titré est copié tel quel en final (tracé dans le manifest) — la phase produit toujours ses sorties.
 
+### Générer les métadonnées de publication (Phase 10)
+
+Titres, description, hashtags et captions prêtes à coller pour chaque clip final — 100 % local, par règles, aucun appel API :
+
+```powershell
+# Prérequis : clips finaux générés (Phase 9)
+python -m src.metadata.generate output/<nom_video>/metadata.json
+start output\<nom_video>\posts\preview.html
+```
+
+Résultats : `output/<nom_video>/metadata_posts.json` (3 variantes de titre par clip — direct / curiosité / punchy —, description sobre, 8-12 hashtags larges+niche+sujet, captions TikTok/Reels/Shorts, sujets et mots-clés détectés), galerie `posts/preview.html`, export `posts/posts.csv` (Excel-compatible). Les titres sont toujours construits à partir du contenu réel du clip (anti-clickbait). Lexique de sujets et hashtags modifiables dans `src/metadata/generate.py` (constantes en tête de fichier).
+
 ### Générer une vidéo de test
 
 Pas de vidéo sous la main ? Générez-en une (mire animée + bip audio) :
@@ -347,7 +359,7 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 | 7 | Reframe vertical intelligent (9:16) | ✅ Fait |
 | 8 | Sous-titres animés karaoke (ASS) | ✅ Fait |
 | 9 | Templates de montage (hook, barre, zoom, watermark) | ✅ Fait |
-| 10 | Métadonnées (titres, hashtags) | À venir |
+| 10 | Métadonnées de publication (titres, hashtags, captions) | ✅ Fait |
 | 11 | Score de visibilité | À venir |
 | 12 | Export multi-plateforme | À venir |
 | 13 | Pipeline complet + batch | À venir |
