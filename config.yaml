@@ -150,6 +150,11 @@ vertical:
 # --- Phase 8 : sous-titres ---
 subtitles:
   style: bold_classic       # Nom d'un style defini dans configs/subtitle_styles.yaml
+  lead_in: 0.08             # Affiche le groupe ~80 ms avant le 1er mot (jamais en retard)
+  hold: 0.15                # Garde le groupe ~150 ms apres le dernier mot
+  group_gap_threshold: 0.6  # Pause > 0.6 s entre deux mots = nouveau groupe
+  crf: 20
+  preset: medium
 
 # --- Phase 12 : export ---
 export:

@@ -108,6 +108,22 @@ def probe_media(path: Path | str) -> dict:
     return json.loads(stdout)
 
 
+def format_filter_path(path: Path | str) -> str:
+    """
+    Formate un chemin de fichier pour un argument de filtre FFmpeg
+    (sendcmd=f=..., ass=..., subtitles=...). Le parseur de filtergraph
+    consomme les '\\' et traite ':' comme separateur d'options : un
+    chemin Windows brut (C:\\Users\\...) casse le graphe.
+    Recette validee empiriquement : slashes avant, quotes simples autour
+    de la valeur, et colon echappe en \\: A L'INTERIEUR des quotes.
+    'C:\\Users\\x\\test.cmd' -> 'C\\:/Users/x/test.cmd' (entre quotes)
+    """
+    text = str(path).replace("\\", "/")
+    text = text.replace("'", r"'\''")   # Apostrophe dans le chemin (rare)
+    text = text.replace(":", r"\:")
+    return f"'{text}'"
+
+
 def parse_frame_rate(rate: str | None) -> float | None:
     """
     Convertit un frame rate ffprobe ("30000/1001", "25/1") en float.
