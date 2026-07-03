@@ -18,12 +18,14 @@ from src.reframe.vertical import (
     build_vertical_preview_html,
     classify_aspect,
     detect_face_centers,
+    format_filter_path,
     interpolate_missing,
     reframe_clips,
     reframe_single_clip,
+    render_face_tracking,
     smooth_series,
 )
-from src.utils.ffmpeg import probe_media, run_ffmpeg
+from src.utils.ffmpeg import FFmpegError, probe_media, run_ffmpeg
 
 VERTICAL_CONFIG = {
     "width": 1080, "height": 1920, "fps": "source",
@@ -64,6 +66,80 @@ def test_smooth_series_reduces_jitter():
     smoothed = smooth_series(jittery, window_samples=5)
     assert max(smoothed) - min(smoothed) < 200        # Amplitude reduite
     assert sum(smoothed) / len(smoothed) == pytest.approx(200, abs=20)  # Pas de derive
+
+
+# ---------------------------------------------------------------------------
+# Chemins Windows dans les filtres FFmpeg (bug sendcmd sous Windows)
+# ---------------------------------------------------------------------------
+
+def test_format_filter_path_windows():
+    """Non-regression : un chemin Windows type C:\\Users\\...\\Temp\\test.cmd
+    doit etre formate en slashes + colon echappe, entre quotes simples."""
+    formatted = format_filter_path(r"C:\Users\LENOVO\AppData\Local\Temp\test.cmd")
+
+    assert formatted == r"'C\:/Users/LENOVO/AppData/Local/Temp/test.cmd'"
+    assert "\\U" not in formatted            # Plus aucun backslash de chemin
+    assert formatted.startswith("'") and formatted.endswith("'")
+
+
+def test_format_filter_path_posix_unchanged():
+    """Un chemin POSIX simple reste valide (quotes ajoutees, rien casse)."""
+    assert format_filter_path("/tmp/x/test.cmd") == "'/tmp/x/test.cmd'"
+
+
+def test_sendcmd_renders_with_colon_in_path(tmp_path):
+    """Le rendu face_tracking doit reellement fonctionner quand le fichier
+    sendcmd vit dans un chemin contenant ':' (le caractere qui cassait
+    Windows). Linux accepte ':' dans les noms de dossiers : on reproduit
+    donc exactement le cas Windows contre le meme parseur FFmpeg."""
+    clip = tmp_path / "in.mp4"
+    run_ffmpeg([
+        "-f", "lavfi", "-i", "testsrc2=duration=2:size=640x360:rate=30",
+        "-f", "lavfi", "-i", "sine=frequency=440:duration=2",
+        "-c:v", "libx264", "-preset", "ultrafast", "-pix_fmt", "yuv420p",
+        "-c:a", "aac", clip,
+    ])
+    # Dossier de sortie avec ':' dans le nom -> le fichier sendcmd (cree a
+    # cote de la sortie) contiendra le caractere problematique
+    hostile_dir = tmp_path / "C:fake_windows"
+    hostile_dir.mkdir()
+    destination = hostile_dir / "out.mp4"
+
+    config = {"width": 1080, "height": 1920, "fps": "source",
+              "crf": 28, "preset": "ultrafast"}
+    render_face_tracking(
+        clip, destination, config, source_width=640, source_height=360,
+        times=[0.0, 0.5, 1.0, 1.5], x_positions=[0, 100, 200, 300],
+    )
+
+    assert destination.is_file()
+    probe = probe_media(destination)
+    stream = next(s for s in probe["streams"] if s["codec_type"] == "video")
+    assert (stream["width"], stream["height"]) == (1080, 1920)
+
+
+def test_face_tracking_render_failure_falls_back(monkeypatch, horizontal_clip, tmp_path):
+    """Si le rendu face_tracking echoue cote FFmpeg, la phase ne plante
+    pas : bascule en crop central, tracee dans le resultat."""
+    # Detection simulee (pas besoin de visage reel pour tester le fallback)
+    monkeypatch.setattr(
+        "src.reframe.vertical.detect_face_centers",
+        lambda *a, **k: ([0.0, 0.5, 1.0], [0.4, 0.5, 0.6], 1.0),
+    )
+    def failing_render(*args, **kwargs):
+        raise FFmpegError("echec simule du rendu sendcmd")
+    monkeypatch.setattr("src.reframe.vertical.render_face_tracking", failing_render)
+
+    destination = tmp_path / "fallback_render.mp4"
+    info = reframe_single_clip(horizontal_clip, destination, VERTICAL_CONFIG, method="face")
+
+    assert info["method"] == "center_crop"
+    assert info["fallback_from"] == "face_tracking"
+    assert info["face_detection_rate"] == 1.0
+    assert destination.is_file()
+    probe = probe_media(destination)
+    stream = next(s for s in probe["streams"] if s["codec_type"] == "video")
+    assert (stream["width"], stream["height"]) == (1080, 1920)
 
 
 # ---------------------------------------------------------------------------

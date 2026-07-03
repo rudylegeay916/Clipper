@@ -291,6 +291,8 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 | C | deux visages (grand + petit) | `face_tracking` | 1.0 | visage principal centré (x=0.50, σ=0.009), secondaire hors cadre, coupé 0/24 |
 | demo 1-2 | mire sans visage | `center_crop` | 0.0 | fallback, sortie conforme |
 
+**Correctif Windows (post-validation)** : le chemin du fichier `sendcmd` passé au filtergraph FFmpeg cassait sous Windows (`C:\Users\...` → backslashes consommés et `:` interprété comme séparateur d'options). Corrigé : chemin converti en slashes, colon échappé, valeur entre quotes (`format_filter_path()`, recette validée contre le parseur FFmpeg), fichier de commandes créé à côté du clip de sortie plutôt que dans le temp système, et **fallback automatique en `center_crop`** (tracé `fallback_from: face_tracking` dans le manifest + warning dans les logs) si le rendu face_tracking échoue malgré tout — la phase ne plante plus jamais sur un clip.
+
 **Limites observées** : la politique réseau de l'environnement de développement cloud (registres de paquets uniquement) empêche d'y télécharger une vraie vidéo YouTube — la validation sur du **footage réel de podcast** doit être confirmée sur machine locale : `python -m src.reframe.vertical output/<nom_video>/metadata.json` puis contrôler dans `vertical/preview.html` : (1) visage jamais coupé, (2) cadrage stable quand le locuteur bouge peu (sinon monter `vertical.smoothing_strength`), (3) `face_detection_rate` du manifest > 0.5 sur du footage réel de face, (4) bascule `center_crop` propre sur les plans sans visage. Suivi horizontal uniquement ; un seul visage suivi (pas encore de détection du locuteur actif).
 
 ## Avancement

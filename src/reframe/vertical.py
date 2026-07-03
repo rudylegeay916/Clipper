@@ -232,6 +232,23 @@ def render_center_crop(clip_path: Path, destination: Path, config: dict,
     ])
 
 
+def format_filter_path(path: Path | str) -> str:
+    """
+    Formate un chemin de fichier pour un argument de filtre FFmpeg
+    (ex : sendcmd=f=...). Le parseur de filtergraph consomme les '\\'
+    et traite ':' comme separateur d'options : un chemin Windows brut
+    (C:\\Users\\...) casse le graphe avec "No option name near ...".
+    Recette validee empiriquement (Linux et Windows partagent le meme
+    parseur) : slashes avant, quotes simples autour de la valeur, et
+    colon echappe en \\: A L'INTERIEUR des quotes.
+    'C:\\Users\\x\\test.cmd' -> 'C\\:/Users/x/test.cmd' (entre quotes)
+    """
+    text = str(path).replace("\\", "/")
+    text = text.replace("'", r"'\''")   # Apostrophe dans le chemin (rare)
+    text = text.replace(":", r"\:")
+    return f"'{text}'"
+
+
 def render_face_tracking(clip_path: Path, destination: Path, config: dict,
                          source_width: int, source_height: int,
                          times: list[float], x_positions: list[int]) -> None:
@@ -244,9 +261,13 @@ def render_face_tracking(clip_path: Path, destination: Path, config: dict,
     crop_width = int(source_height * TARGET_RATIO / 2) * 2
 
     # Fichier de commandes : "temps crop x position;"
+    # Cree A COTE du fichier de sortie (pas dans le temp systeme) :
+    # chemin court, meme disque, et surtout pas de dossier utilisateur
+    # Windows impossible a echapper proprement
     lines = [f"{t:.3f} crop x {x};" for t, x in zip(times, x_positions)]
     with tempfile.NamedTemporaryFile(
-        "w", suffix=".cmd", delete=False, encoding="utf-8"
+        "w", prefix="sendcmd_", suffix=".cmd", dir=destination.parent,
+        delete=False, encoding="utf-8",
     ) as command_file:
         command_file.write("\n".join(lines) + "\n")
         command_path = Path(command_file.name)
@@ -255,7 +276,7 @@ def render_face_tracking(clip_path: Path, destination: Path, config: dict,
         run_ffmpeg([
             "-i", clip_path,
             "-vf",
-            f"sendcmd=f={command_path},"
+            f"sendcmd=f={format_filter_path(command_path)},"
             f"crop=w={crop_width}:h={source_height}:x={x_positions[0]}:y=0,"
             f"scale={width}:{height}",
             *_encode_args(config),
@@ -293,11 +314,14 @@ def reframe_single_clip(clip_path: Path, destination: Path, config: dict,
         }
 
     # --- Suivi de visage ---
+    fallback_from = None
+    detection_rate = None
     if method == "face" and config.get("face_detection", True):
         times, centers, rate = detect_face_centers(
             clip_path,
             sample_fps=config.get("detection_sample_fps", 5),
         )
+        detection_rate = round(rate, 2)
         min_rate = config.get("min_detection_rate", 0.2)
         if rate >= min_rate:
             interpolated = interpolate_missing(centers)
@@ -321,30 +345,42 @@ def reframe_single_clip(clip_path: Path, destination: Path, config: dict,
                 "  Suivi de visage : %.0f%% de detections, cadrage lisse",
                 rate * 100,
             )
-            render_face_tracking(
-                clip_path, destination, config,
-                source_width, source_height, times, x_positions,
+            try:
+                render_face_tracking(
+                    clip_path, destination, config,
+                    source_width, source_height, times, x_positions,
+                )
+                return {
+                    "method": "face_tracking",
+                    "face_detection_rate": detection_rate,
+                    "crop_strategy": "dynamic_face",
+                }
+            except FFmpegError as error:
+                # Le suivi a echoue a l'ENCODAGE (pas a la detection) :
+                # on ne fait jamais planter la phase, on bascule en crop
+                # central et on le dit clairement
+                fallback_from = "face_tracking"
+                logger.warning(
+                    "  FALLBACK : echec FFmpeg du rendu face_tracking sur %s, "
+                    "bascule en crop central. Detail :\n%s",
+                    clip_path.name, error,
+                )
+        else:
+            logger.info(
+                "  Taux de detection %.0f%% < %.0f%% : crop central",
+                rate * 100, min_rate * 100,
             )
-            return {
-                "method": "face_tracking",
-                "face_detection_rate": round(rate, 2),
-                "crop_strategy": "dynamic_face",
-            }
-        logger.info(
-            "  Taux de detection %.0f%% < %.0f%% : crop central",
-            rate * 100, min_rate * 100,
-        )
-        detection_rate = round(rate, 2)
-    else:
-        detection_rate = None
 
     # --- Fallback : crop central ---
     render_center_crop(clip_path, destination, config, source_width, source_height)
-    return {
+    info = {
         "method": "center_crop",
         "face_detection_rate": detection_rate,
         "crop_strategy": "static_center",
     }
+    if fallback_from:
+        info["fallback_from"] = fallback_from
+    return info
 
 
 # ---------------------------------------------------------------------------
@@ -493,6 +529,9 @@ def reframe_clips(source: str, force: bool = False, method: str | None = None,
             "method": info["method"],
             "face_detection_rate": info["face_detection_rate"],
             "crop_strategy": info["crop_strategy"],
+            # Present uniquement si le rendu face_tracking a echoue cote
+            # FFmpeg et que le clip est passe en crop central
+            **({"fallback_from": info["fallback_from"]} if "fallback_from" in info else {}),
             "score": clip["score"],
             "hook_text": clip["hook_text"],
             "suggested_title": clip["suggested_title"],
