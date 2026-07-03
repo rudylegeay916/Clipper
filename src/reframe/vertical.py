@@ -185,6 +185,106 @@ def smooth_series(values: list[float], window_samples: int) -> list[float]:
 
 
 # ---------------------------------------------------------------------------
+# Phase 7 bis : stabilisation du cadrage (anti-saccades)
+# ---------------------------------------------------------------------------
+
+# Frequence des commandes de crop envoyees a FFmpeg. 15 Hz suffit : la
+# vitesse de deplacement etant limitee, chaque pas fait quelques pixels
+# au plus -> mouvement percu comme continu (l'ancien code envoyait une
+# commande par detection, toutes les 200 ms : sauts par paliers visibles).
+COMMAND_RATE = 15.0
+
+
+def build_camera_trajectory(
+    times: list[float],
+    targets: list[float],
+    deadzone: float,
+    max_speed: float,
+    rate: float = COMMAND_RATE,
+) -> tuple[list[float], list[float]]:
+    """
+    Transforme les positions cibles echantillonnees (issues de la
+    detection lissee) en trajectoire de camera FLUIDE, comme le ferait
+    un cadreur :
+    - zone morte : le cadre ne bouge pas tant que la cible reste a moins
+      de `deadzone` pixels de sa position (un visage qui respire ou
+      gesticule ne fait pas bouger la camera) ;
+    - vitesse limitee : quand il faut bouger, le cadre GLISSE a
+      `max_speed` px/s maximum, jamais de saut ;
+    - trajectoire reechantillonnee a `rate` Hz : les pas individuels
+      font quelques pixels, invisibles a l'oeil.
+    Retourne (temps, positions) sur la grille fine.
+    """
+    if not times:
+        return [], []
+    if len(times) == 1:
+        return [times[0]], [float(targets[0])]
+
+    grid = np.arange(times[0], times[-1] + 1e-9, 1.0 / rate)
+    interpolated_targets = np.interp(grid, times, targets)
+
+    step_budget = max_speed / rate  # Deplacement max par pas de grille
+    camera = float(interpolated_targets[0])
+    positions = []
+    for target in interpolated_targets:
+        error = target - camera
+        if abs(error) > deadzone:
+            # On ne comble que ce qui depasse la zone morte, a vitesse bornee
+            camera += np.sign(error) * min(abs(error) - deadzone, step_budget)
+        positions.append(camera)
+    return list(grid), positions
+
+
+def compute_jitter_score(times: list[float], positions: list[float],
+                         min_amplitude: float) -> float:
+    """
+    Mesure l'instabilite du cadrage : nombre d'INVERSIONS de direction
+    par seconde (seuls les mouvements d'amplitude > min_amplitude
+    comptent). Un cadrage sain fait 0 a ~0.3 inversion/s (plans fixes et
+    glissements francs) ; un tracking qui ping-pong entre deux positions
+    (detection instable, deux visages...) depasse 1/s.
+    """
+    if len(positions) < 3:
+        return 0.0
+    duration = max(times[-1] - times[0], 1e-6)
+
+    reversals = 0
+    last_direction = 0
+    segment_amplitude = 0.0
+    for previous, current in zip(positions, positions[1:]):
+        delta = current - previous
+        if delta == 0:
+            continue
+        direction = 1 if delta > 0 else -1
+        if direction != last_direction:
+            if last_direction != 0 and segment_amplitude >= min_amplitude:
+                reversals += 1
+            segment_amplitude = 0.0
+            last_direction = direction
+        segment_amplitude += abs(delta)
+    return round(reversals / duration, 2)
+
+
+def dedupe_commands(times: list[float], positions: list[float]) -> tuple[list[float], list[int]]:
+    """
+    Reduit la trajectoire aux commandes utiles pour sendcmd : positions
+    arrondies au pixel, et une commande UNIQUEMENT quand la position
+    change (pendant les plans fixes de la zone morte : zero commande,
+    cadre parfaitement immobile).
+    """
+    if not times:
+        return [], []
+    command_times = [times[0]]
+    command_positions = [int(round(positions[0]))]
+    for time, position in zip(times[1:], positions[1:]):
+        pixel = int(round(position))
+        if pixel != command_positions[-1]:
+            command_times.append(float(time))
+            command_positions.append(pixel)
+    return command_times, command_positions
+
+
+# ---------------------------------------------------------------------------
 # Rendu FFmpeg
 # ---------------------------------------------------------------------------
 
@@ -291,32 +391,52 @@ def render_face_tracking(clip_path: Path, destination: Path, config: dict,
 # ---------------------------------------------------------------------------
 
 def reframe_single_clip(clip_path: Path, destination: Path, config: dict,
-                        method: str = "face") -> dict:
+                        method: str = "auto") -> dict:
     """
-    Reframe un clip en vertical selon la meilleure strategie.
-    Retourne {method, face_detection_rate, crop_strategy, width, height,
-    duration} pour le manifest.
+    Reframe un clip en vertical selon la strategie demandee :
+    - "auto"   : suivi de visage si possible ET stable, sinon crop central
+                 (fallback automatique si le jitter depasse le seuil) ;
+    - "face"   : force le suivi de visage (pas de fallback jitter, mais
+                 toujours le fallback en cas d'echec FFmpeg) ;
+    - "center" : crop central direct.
+    Retourne pour le manifest : method_used, requested_method,
+    face_detection_rate, tracking_jitter_score, crop_strategy,
+    et fallback_from / fallback_reason si un fallback a eu lieu.
     """
     probe = probe_media(clip_path)
     video_stream = next(s for s in probe["streams"] if s["codec_type"] == "video")
     source_width = video_stream["width"]
     source_height = video_stream["height"]
-    duration = float(probe["format"]["duration"])
+
+    def result(method_used, crop_strategy, detection_rate=None, jitter=None,
+               fallback_from=None, fallback_reason=None):
+        info = {
+            "method": method_used,          # Compatibilite (== method_used)
+            "method_used": method_used,
+            "requested_method": method,
+            "face_detection_rate": detection_rate,
+            "tracking_jitter_score": jitter,
+            "crop_strategy": crop_strategy,
+        }
+        if fallback_from:
+            info["fallback_from"] = fallback_from
+            info["fallback_reason"] = fallback_reason
+        return info
 
     # --- Deja vertical : pas de recadrage ---
     if classify_aspect(source_width, source_height) == "vertical":
         logger.info("  Deja vertical (%dx%d) : mise a l'echelle sans recadrage",
                     source_width, source_height)
         render_scale_pad(clip_path, destination, config)
-        return {
-            "method": "already_vertical", "face_detection_rate": None,
-            "crop_strategy": "scale_pad",
-        }
+        return result("already_vertical", "scale_pad")
 
-    # --- Suivi de visage ---
+    # --- Suivi de visage (modes auto et face) ---
     fallback_from = None
+    fallback_reason = None
     detection_rate = None
-    if method == "face" and config.get("face_detection", True):
+    jitter = None
+    want_face = method in ("auto", "face") and config.get("face_detection", True)
+    if want_face:
         times, centers, rate = detect_face_centers(
             clip_path,
             sample_fps=config.get("detection_sample_fps", 5),
@@ -334,53 +454,89 @@ def reframe_single_clip(clip_path: Path, destination: Path, config: dict,
                 )
                 interpolated = smooth_series(interpolated, window_samples)
 
-            # Centres relatifs -> positions x du crop (bornees a l'image)
+            # Centres relatifs -> positions x du bord gauche du crop
             crop_width = int(source_height * TARGET_RATIO / 2) * 2
-            x_positions = [
-                int(min(max(c * source_width - crop_width / 2, 0),
-                        source_width - crop_width))
+            raw_positions = [
+                min(max(c * source_width - crop_width / 2, 0.0),
+                    float(source_width - crop_width))
                 for c in interpolated
             ]
-            logger.info(
-                "  Suivi de visage : %.0f%% de detections, cadrage lisse",
-                rate * 100,
+
+            # --- Phase 7 bis : trajectoire "cameraman" fluide ---
+            deadzone = config.get("deadzone_ratio", 0.10) * crop_width
+            trajectory_times, trajectory = build_camera_trajectory(
+                times, raw_positions,
+                deadzone=deadzone,
+                max_speed=config.get("max_pan_speed", 180),
             )
-            try:
-                render_face_tracking(
-                    clip_path, destination, config,
-                    source_width, source_height, times, x_positions,
-                )
-                return {
-                    "method": "face_tracking",
-                    "face_detection_rate": detection_rate,
-                    "crop_strategy": "dynamic_face",
-                }
-            except FFmpegError as error:
-                # Le suivi a echoue a l'ENCODAGE (pas a la detection) :
-                # on ne fait jamais planter la phase, on bascule en crop
-                # central et on le dit clairement
+            jitter = compute_jitter_score(
+                trajectory_times, trajectory, min_amplitude=crop_width * 0.01
+            )
+
+            jitter_threshold = config.get("jitter_threshold", 0.8)
+            jitter_fallback = (
+                method == "auto"                              # --method face force le suivi
+                and config.get("fallback_on_jitter", True)
+                and jitter > jitter_threshold
+            )
+            if jitter_fallback:
                 fallback_from = "face_tracking"
-                logger.warning(
-                    "  FALLBACK : echec FFmpeg du rendu face_tracking sur %s, "
-                    "bascule en crop central. Detail :\n%s",
-                    clip_path.name, error,
+                fallback_reason = (
+                    f"tracking_jitter_score {jitter} > seuil {jitter_threshold}"
                 )
+                logger.warning(
+                    "  FALLBACK : cadrage instable (jitter %.2f > %.2f), "
+                    "bascule en crop central pour garantir une video fluide",
+                    jitter, jitter_threshold,
+                )
+            else:
+                command_times, command_positions = dedupe_commands(
+                    trajectory_times, trajectory
+                )
+                logger.info(
+                    "  Suivi de visage : %.0f%% de detections, jitter %.2f, "
+                    "%d commandes de cadrage",
+                    rate * 100, jitter, len(command_positions),
+                )
+                try:
+                    render_face_tracking(
+                        clip_path, destination, config,
+                        source_width, source_height,
+                        command_times, command_positions,
+                    )
+                    return result(
+                        "face_tracking", "dynamic_face",
+                        detection_rate=detection_rate, jitter=jitter,
+                    )
+                except FFmpegError as error:
+                    # Le suivi a echoue a l'ENCODAGE (pas a la detection) :
+                    # on ne fait jamais planter la phase
+                    fallback_from = "face_tracking"
+                    fallback_reason = "echec FFmpeg du rendu face_tracking"
+                    logger.warning(
+                        "  FALLBACK : echec FFmpeg du rendu face_tracking sur %s, "
+                        "bascule en crop central. Detail :\n%s",
+                        clip_path.name, error,
+                    )
         else:
             logger.info(
                 "  Taux de detection %.0f%% < %.0f%% : crop central",
                 rate * 100, min_rate * 100,
             )
+            if method == "face":
+                # Le suivi etait explicitement demande : on trace le fallback
+                fallback_from = "face_tracking"
+                fallback_reason = (
+                    f"taux de detection {detection_rate} < {min_rate}"
+                )
 
-    # --- Fallback : crop central ---
+    # --- Crop central (direct, ou fallback) ---
     render_center_crop(clip_path, destination, config, source_width, source_height)
-    info = {
-        "method": "center_crop",
-        "face_detection_rate": detection_rate,
-        "crop_strategy": "static_center",
-    }
-    if fallback_from:
-        info["fallback_from"] = fallback_from
-    return info
+    return result(
+        "center_crop", "static_center",
+        detection_rate=detection_rate, jitter=jitter,
+        fallback_from=fallback_from, fallback_reason=fallback_reason,
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -392,11 +548,19 @@ def build_vertical_preview_html(manifest: dict) -> str:
     cards = []
     for clip in manifest["clips"]:
         rate = clip["face_detection_rate"]
+        jitter = clip.get("tracking_jitter_score")
+        face_label = f"🎯 suivi visage ({rate:.0%})" if rate else "🎯 suivi visage"
+        if jitter is not None and clip["method"] == "face_tracking":
+            face_label += f" · jitter {jitter}"
         method_label = {
-            "face_tracking": f"🎯 suivi visage ({rate:.0%})" if rate else "🎯 suivi visage",
+            "face_tracking": face_label,
             "center_crop": "◻ crop central",
             "already_vertical": "↕ déjà vertical",
         }.get(clip["method"], clip["method"])
+        fallback_line = (
+            f'<p class="fallback">⚠ fallback : {html.escape(clip["fallback_reason"])}</p>'
+            if clip.get("fallback_reason") else ""
+        )
         cards.append(f"""
   <article class="card">
     <video src="{html.escape(clip['vertical_file'])}" controls preload="metadata"></video>
@@ -404,6 +568,7 @@ def build_vertical_preview_html(manifest: dict) -> str:
       <div class="row"><span class="rank">#{clip['rank']}</span>
         <span class="score">score {clip['score']}</span></div>
       <p class="method">{html.escape(method_label)} · {clip['duration']:.1f}s</p>
+      {fallback_line}
       <p class="title">{html.escape(clip['suggested_title'])}</p>
     </div>
   </article>""")
@@ -428,6 +593,7 @@ def build_vertical_preview_html(manifest: dict) -> str:
     .score {{ background: #2563eb; color: #fff; padding: 1px 9px; border-radius: 999px;
              font-size: 0.82rem; }}
     .method {{ color: #9aa3b2; font-size: 0.82rem; margin: 6px 0 2px; }}
+    .fallback {{ color: #f0b429; font-size: 0.78rem; margin: 2px 0; }}
     .title {{ font-size: 0.9rem; margin: 4px 0 2px; }}
     footer {{ margin-top: 32px; color: #6b7280; font-size: 0.8rem; }}
   </style>
@@ -499,7 +665,9 @@ def reframe_clips(source: str, force: bool = False, method: str | None = None,
 
     clips_dir = output_dir / "clips"
     vertical_dir.mkdir(parents=True, exist_ok=True)
-    reframe_method = method or ("face" if vertical_config.get("face_detection", True) else "center")
+    # "auto" par defaut : suivi de visage si possible et stable, sinon
+    # crop central — la video de sortie est TOUJOURS fluide
+    reframe_method = method or "auto"
 
     # --- Reframe de chaque clip ---
     vertical_clips = []
@@ -526,12 +694,17 @@ def reframe_clips(source: str, force: bool = False, method: str | None = None,
             "width": video_stream["width"],
             "height": video_stream["height"],
             "duration": round(float(probe["format"]["duration"]), 3),
-            "method": info["method"],
+            "method": info["method_used"],   # Compatibilite ascendante
+            "method_used": info["method_used"],
+            "requested_method": info["requested_method"],
             "face_detection_rate": info["face_detection_rate"],
+            "tracking_jitter_score": info["tracking_jitter_score"],
             "crop_strategy": info["crop_strategy"],
-            # Present uniquement si le rendu face_tracking a echoue cote
-            # FFmpeg et que le clip est passe en crop central
-            **({"fallback_from": info["fallback_from"]} if "fallback_from" in info else {}),
+            # Presents uniquement si un fallback a eu lieu (jitter trop
+            # eleve, echec FFmpeg, ou detection insuffisante en --method face)
+            **({"fallback_from": info["fallback_from"],
+                "fallback_reason": info["fallback_reason"]}
+               if "fallback_from" in info else {}),
             "score": clip["score"],
             "hook_text": clip["hook_text"],
             "suggested_title": clip["suggested_title"],
@@ -574,8 +747,10 @@ def main() -> int:
         help="Chemin d'un fichier video, d'un metadata.json, ou une URL",
     )
     parser.add_argument(
-        "--method", choices=["face", "center"], default=None,
-        help="Force la strategie (defaut : face si vertical.face_detection est actif)",
+        "--method", choices=["auto", "face", "center"], default=None,
+        help="auto (defaut) : suivi de visage si possible et stable, sinon crop "
+             "central | face : force le suivi (ignore le fallback jitter) | "
+             "center : crop central direct",
     )
     parser.add_argument(
         "--top", type=int, default=None,

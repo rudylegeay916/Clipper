@@ -102,6 +102,15 @@ vertical:
   smoothing: true           # Lissage du cadrage (indispensable : evite les a-coups)
   smoothing_strength: 0.7   # 0 = reactif nerveux, 1 = tres lisse et lent
   fallback: center_crop     # Strategie si aucun visage : crop central propre
+  # --- Phase 7 bis : stabilisation du cadrage (anti-saccades) ---
+  # Logique "cameraman" : le cadre ne bouge PAS tant que le visage reste
+  # dans la zone morte, puis glisse a vitesse limitee. Les commandes de
+  # crop sont interpolees a 15 Hz (fini les sauts par paliers de 200 ms).
+  deadzone_ratio: 0.10      # Zone morte : +/- 10% de la largeur du crop
+  max_pan_speed: 180        # Vitesse max de deplacement du cadre (px source/s)
+  fallback_on_jitter: true  # Si le cadrage reste instable, bascule en crop central
+  jitter_threshold: 0.8     # Seuil : inversions de direction par seconde (0.2 = calme,
+                            #   > 1 = ping-pong visible -> fallback)
   crf: 20
   preset: medium
 

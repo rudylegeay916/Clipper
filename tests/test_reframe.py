@@ -15,8 +15,11 @@ import json
 import pytest
 
 from src.reframe.vertical import (
+    build_camera_trajectory,
     build_vertical_preview_html,
     classify_aspect,
+    compute_jitter_score,
+    dedupe_commands,
     detect_face_centers,
     format_filter_path,
     interpolate_missing,
@@ -66,6 +69,65 @@ def test_smooth_series_reduces_jitter():
     smoothed = smooth_series(jittery, window_samples=5)
     assert max(smoothed) - min(smoothed) < 200        # Amplitude reduite
     assert sum(smoothed) / len(smoothed) == pytest.approx(200, abs=20)  # Pas de derive
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 bis : trajectoire "cameraman", jitter, deduplication
+# ---------------------------------------------------------------------------
+
+def test_camera_trajectory_holds_in_deadzone():
+    """Une cible qui oscille DANS la zone morte ne fait pas bouger la
+    camera d'un seul pixel (plan parfaitement fixe)."""
+    times = [i * 0.2 for i in range(25)]                 # 5 s a 5 Hz
+    targets = [200 + (15 if i % 2 else -15) for i in range(25)]  # Oscille +/-15 px
+
+    grid, positions = build_camera_trajectory(times, targets, deadzone=40, max_speed=180)
+
+    assert max(positions) - min(positions) < 1.0         # Camera immobile
+    # Et donc : une seule commande sendcmd apres deduplication
+    command_times, command_positions = dedupe_commands(grid, positions)
+    assert len(command_positions) == 1
+
+
+def test_camera_trajectory_speed_limited():
+    """Un saut brutal de la cible produit un GLISSEMENT borne en vitesse,
+    jamais un saut de cadre."""
+    times = [0.0, 0.2, 0.4, 0.6, 4.0]
+    targets = [0, 0, 300, 300, 300]                      # Saut de 300 px a t=0.4
+
+    grid, positions = build_camera_trajectory(times, targets, deadzone=20, max_speed=150)
+
+    steps = [abs(b - a) for a, b in zip(positions, positions[1:])]
+    assert max(steps) <= 150 / 15.0 + 1e-6               # <= vitesse max par pas (15 Hz)
+    assert positions[-1] == pytest.approx(280, abs=2)    # Converge vers cible - deadzone
+    # Trajectoire monotone : le glissement ne revient jamais en arriere
+    assert all(b >= a - 1e-9 for a, b in zip(positions, positions[1:]))
+
+
+def test_jitter_score_low_on_smooth_glide():
+    """Un glissement franc dans une seule direction = jitter ~0."""
+    times = [i / 15 for i in range(60)]
+    positions = [i * 5.0 for i in range(60)]             # Glissement regulier
+    assert compute_jitter_score(times, positions, min_amplitude=4) == 0.0
+
+
+def test_jitter_score_high_on_ping_pong():
+    """Un cadrage qui ping-pong = jitter eleve (> 1 inversion/s)."""
+    times = [i * 0.2 for i in range(30)]                 # 6 s
+    positions = [0 if i % 2 else 80 for i in range(30)]  # Aller-retour permanent
+    score = compute_jitter_score(times, positions, min_amplitude=4)
+    assert score > 1.0
+
+
+def test_dedupe_commands_only_on_change():
+    """Commandes emises uniquement quand la position (pixel) change."""
+    times = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5]
+    positions = [10.2, 10.4, 10.3, 50.0, 50.1, 90.0]     # 10 -> 50 -> 90
+
+    command_times, command_positions = dedupe_commands(times, positions)
+
+    assert command_positions == [10, 50, 90]
+    assert command_times == [0.0, 0.3, 0.5]
 
 
 # ---------------------------------------------------------------------------
@@ -133,13 +195,91 @@ def test_face_tracking_render_failure_falls_back(monkeypatch, horizontal_clip, t
     destination = tmp_path / "fallback_render.mp4"
     info = reframe_single_clip(horizontal_clip, destination, VERTICAL_CONFIG, method="face")
 
-    assert info["method"] == "center_crop"
+    assert info["method_used"] == "center_crop"
+    assert info["requested_method"] == "face"
     assert info["fallback_from"] == "face_tracking"
+    assert "FFmpeg" in info["fallback_reason"]
     assert info["face_detection_rate"] == 1.0
     assert destination.is_file()
     probe = probe_media(destination)
     stream = next(s for s in probe["streams"] if s["codec_type"] == "video")
     assert (stream["width"], stream["height"]) == (1080, 1920)
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 bis : fallback automatique sur jitter (mode auto)
+# ---------------------------------------------------------------------------
+
+# Detection simulee instable : la cible saute entre 25% et 75% de la
+# largeur toutes les 0.4 s -> cadrage ping-pong garanti
+UNSTABLE_CENTERS = (
+    [i * 0.2 for i in range(30)],                       # 6 s a 5 Hz
+    [0.25 if (i // 2) % 2 == 0 else 0.75 for i in range(30)],
+    1.0,
+)
+
+# Config sans lissage pour que l'instabilite atteigne la trajectoire
+UNSTABLE_TEST_CONFIG = {
+    **VERTICAL_CONFIG, "smoothing": False,
+    "deadzone_ratio": 0.05, "max_pan_speed": 600,
+    "fallback_on_jitter": True, "jitter_threshold": 0.8,
+}
+
+
+def test_auto_mode_falls_back_on_jitter(monkeypatch, horizontal_clip, tmp_path):
+    """Mode auto + tracking instable -> regeneration automatique en
+    center_crop, avec score et raison traces. La video de sortie est
+    TOUJOURS produite et fluide."""
+    monkeypatch.setattr(
+        "src.reframe.vertical.detect_face_centers",
+        lambda *a, **k: UNSTABLE_CENTERS,
+    )
+
+    destination = tmp_path / "jitter_fallback.mp4"
+    info = reframe_single_clip(horizontal_clip, destination, UNSTABLE_TEST_CONFIG, method="auto")
+
+    assert info["method_used"] == "center_crop"
+    assert info["requested_method"] == "auto"
+    assert info["fallback_from"] == "face_tracking"
+    assert "jitter" in info["fallback_reason"]
+    assert info["tracking_jitter_score"] > 0.8
+    assert destination.is_file()
+    probe = probe_media(destination)
+    stream = next(s for s in probe["streams"] if s["codec_type"] == "video")
+    assert (stream["width"], stream["height"]) == (1080, 1920)
+
+
+def test_method_face_bypasses_jitter_fallback(monkeypatch, horizontal_clip, tmp_path):
+    """--method face force le suivi meme instable (le jitter est mesure
+    et trace, mais pas de fallback : l'utilisateur a explicitement choisi)."""
+    monkeypatch.setattr(
+        "src.reframe.vertical.detect_face_centers",
+        lambda *a, **k: UNSTABLE_CENTERS,
+    )
+
+    destination = tmp_path / "forced_face.mp4"
+    info = reframe_single_clip(horizontal_clip, destination, UNSTABLE_TEST_CONFIG, method="face")
+
+    assert info["method_used"] == "face_tracking"
+    assert info["tracking_jitter_score"] > 0.8   # Mesure quand meme
+    assert "fallback_from" not in info
+    assert destination.is_file()
+
+
+def test_auto_mode_keeps_stable_tracking(monkeypatch, horizontal_clip, tmp_path):
+    """Mode auto + tracking stable -> face_tracking conserve (pas de
+    fallback abusif)."""
+    stable = ([i * 0.2 for i in range(30)], [0.5 + i * 0.005 for i in range(30)], 1.0)
+    monkeypatch.setattr(
+        "src.reframe.vertical.detect_face_centers", lambda *a, **k: stable,
+    )
+
+    destination = tmp_path / "stable_face.mp4"
+    info = reframe_single_clip(horizontal_clip, destination, VERTICAL_CONFIG, method="auto")
+
+    assert info["method_used"] == "face_tracking"
+    assert info["tracking_jitter_score"] <= 0.3
+    assert "fallback_from" not in info
 
 
 # ---------------------------------------------------------------------------
@@ -318,9 +458,12 @@ def test_reframe_clips_manifest_and_preview(fake_output_dir):
     assert manifest["clip_count"] == 1
     clip = manifest["clips"][0]
     for field in ("rank", "source_clip", "vertical_file", "width", "height",
-                  "duration", "method", "face_detection_rate", "crop_strategy",
+                  "duration", "method", "method_used", "requested_method",
+                  "tracking_jitter_score", "face_detection_rate", "crop_strategy",
                   "score", "hook_text", "suggested_title", "platform_fit"):
         assert field in clip, f"Champ manquant dans le manifest : {field}"
+    assert clip["requested_method"] == "auto"      # Mode par defaut
+    assert clip["method_used"] == clip["method"]
     assert clip["width"] == 1080
     assert clip["height"] == 1920
     assert clip["vertical_file"].startswith("vertical_01_")

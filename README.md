@@ -214,8 +214,10 @@ Transforme les clips bruts en vertical 1080×1920 avec suivi du visage principal
 # Prérequis : clips découpés (Phase 6)
 python -m src.reframe.vertical output/<nom_video>/metadata.json
 
-# Forcer le crop central (plus rapide, pas de détection)
-python -m src.reframe.vertical output/<nom_video>/metadata.json --method center
+# Choix de la stratégie : auto (défaut) = suivi si possible ET stable, sinon crop central
+python -m src.reframe.vertical output/<nom_video>/metadata.json --method auto
+python -m src.reframe.vertical output/<nom_video>/metadata.json --method face    # force le suivi
+python -m src.reframe.vertical output/<nom_video>/metadata.json --method center  # crop central direct
 
 # Les 3 meilleurs seulement / régénérer
 python -m src.reframe.vertical output/<nom_video>/metadata.json --top 3 --force
@@ -292,6 +294,8 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 | demo 1-2 | mire sans visage | `center_crop` | 0.0 | fallback, sortie conforme |
 
 **Correctif Windows (post-validation)** : le chemin du fichier `sendcmd` passé au filtergraph FFmpeg cassait sous Windows (`C:\Users\...` → backslashes consommés et `:` interprété comme séparateur d'options). Corrigé : chemin converti en slashes, colon échappé, valeur entre quotes (`format_filter_path()`, recette validée contre le parseur FFmpeg), fichier de commandes créé à côté du clip de sortie plutôt que dans le temp système, et **fallback automatique en `center_crop`** (tracé `fallback_from: face_tracking` dans le manifest + warning dans les logs) si le rendu face_tracking échoue malgré tout — la phase ne plante plus jamais sur un clip.
+
+**Phase 7 bis — stabilisation (anti-saccades)** : le rendu initial envoyait une commande de crop par détection (toutes les 200 ms) → mouvement par paliers, saccadé sur footage réel. Corrigé par une trajectoire « caméraman » : **zone morte** (le cadre ne bouge pas tant que le visage reste dans ±10 % de la largeur du crop — un locuteur qui gesticule = plan fixe), **vitesse limitée** (glissement à 180 px/s max, jamais de saut), commandes interpolées à 15 Hz (pas ≤ 12 px, invisibles). Un **`tracking_jitter_score`** (inversions de direction/s) est mesuré sur la trajectoire finale : en mode `auto`, s'il dépasse `vertical.jitter_threshold` (0.8), le clip est automatiquement régénéré en `center_crop` (`fallback_reason` tracé dans le manifest) — la sortie est toujours fluide. Validation : clip au visage oscillant → **1 seule commande de crop** (plan fixe parfait) ; clip au visage traversant l'écran → 168 commandes fluides, jitter 0.00, visage jamais coupé (0/48).
 
 **Limites observées** : la politique réseau de l'environnement de développement cloud (registres de paquets uniquement) empêche d'y télécharger une vraie vidéo YouTube — la validation sur du **footage réel de podcast** doit être confirmée sur machine locale : `python -m src.reframe.vertical output/<nom_video>/metadata.json` puis contrôler dans `vertical/preview.html` : (1) visage jamais coupé, (2) cadrage stable quand le locuteur bouge peu (sinon monter `vertical.smoothing_strength`), (3) `face_detection_rate` du manifest > 0.5 sur du footage réel de face, (4) bascule `center_crop` propre sur les plans sans visage. Suivi horizontal uniquement ; un seul visage suivi (pas encore de détection du locuteur actif).
 
