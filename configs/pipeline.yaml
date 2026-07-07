@@ -1,0 +1,42 @@
+# ============================================================
+# Phase 13 - Configuration du pipeline complet
+# ============================================================
+# Toutes les valeurs sont surchargables par les options CLI de
+# python -m src.pipeline.run
+# ============================================================
+
+pipeline:
+  # Etapes activees (une etape desactivee est sautee proprement ;
+  # attention : desactiver une etape essentielle bloque les suivantes)
+  stages:
+    ingestion: true
+    preview: true
+    transcription: true
+    detection: true
+    scoring: true
+    cutting: true
+    reframe: true
+    subtitles: true
+    templates: true
+    metadata: true
+    visibility: true
+    export: true
+
+  # Valeurs par defaut des options (null = valeur des configs dediees)
+  defaults:
+    top: null                 # Nombre max de clips (null = config.yaml clips.*)
+    platform: recommended     # recommended | all | tiktok | reels | shorts
+    subtitle_style: null      # null = config.yaml subtitles.style
+    template: null            # null = config.yaml templates.default.name
+    reframe_method: auto      # auto | face | center
+    stability: null           # null = config.yaml vertical.stability
+    language: null            # null = detection automatique
+
+  behavior:
+    resume: true              # Sauter les etapes dont les sorties existent deja
+    keep_going: false         # Continuer apres l'echec d'une etape secondaire
+    stage_timeout: null       # Informatif (non applique au MVP)
+
+  # Politique de nettoyage du cache apres un pipeline reussi :
+  # keep = ne rien supprimer | clean_audio = supprimer cache/<video>/audio.wav
+  cache_cleanup: keep
