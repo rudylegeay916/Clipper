@@ -1,0 +1,48 @@
+# ============================================================
+# Phase 12 - Profils d'export par plateforme
+# ============================================================
+# Toutes les limites sont configurables ici : les plateformes font
+# evoluer leurs specs regulierement, rien n'est fige dans le code.
+# fps: source = conserve la frequence d'images du clip final.
+# ============================================================
+
+profiles:
+
+  tiktok:
+    width: 1080
+    height: 1920
+    video_codec: h264
+    audio_codec: aac
+    pixel_format: yuv420p
+    container: mp4
+    fps: source
+    max_duration: 600         # Limite technique actuelle ; a verifier periodiquement
+    crf: 19
+    preset: medium
+    audio_bitrate: "192k"
+
+  reels:
+    width: 1080
+    height: 1920
+    video_codec: h264
+    audio_codec: aac
+    pixel_format: yuv420p
+    container: mp4
+    fps: source
+    max_duration: 180
+    crf: 19
+    preset: medium
+    audio_bitrate: "192k"
+
+  shorts:
+    width: 1080
+    height: 1920
+    video_codec: h264
+    audio_codec: aac
+    pixel_format: yuv420p
+    container: mp4
+    fps: source
+    max_duration: 180
+    crf: 18                   # YouTube recompresse fort : on lui donne le meilleur
+    preset: medium
+    audio_bitrate: "192k"

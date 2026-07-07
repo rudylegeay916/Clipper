@@ -285,6 +285,21 @@ start output\<nom_video>\visibility\preview.html
 
 Résultats : `visibility_report.json` (8 sous-scores pondérés : hook, rétention, clarté, rythme, sous-titres, titres, métadonnées, adéquation plateforme), galerie `visibility/preview.html`, tri rapide `visibility/visibility.csv`. Poids réglables dans `configs/visibility.yaml` (somme vérifiée automatiquement). Interprétation : 85-100 excellent potentiel · 70-84 bon · 55-69 améliorable · < 55 faible.
 
+### Exporter par plateforme (Phase 12)
+
+Dossiers prêts à publier (vidéo conforme + caption à coller + metadata.json), sans publication automatique :
+
+```powershell
+# Chaque clip vers sa plateforme recommandée (Phase 11)
+python -m src.export.platforms output/<nom_video>/metadata.json
+# Les trois versions de chaque clip / une seule plateforme / les N meilleurs
+python -m src.export.platforms output/<nom_video>/metadata.json --platform all
+python -m src.export.platforms output/<nom_video>/metadata.json --platform tiktok --top 3
+start output\<nom_video>\exports\preview.html
+```
+
+Résultats : `exports/tiktok|reels|shorts/clip_XX/` (vidéo `clip_XX_score<score>_<plateforme>.mp4` + `caption.txt` + `metadata.json`), récapitulatif `export_manifest.json`, galerie `exports/preview.html`. Copie sans réencodage si le final est déjà conforme au profil (vérifié au ffprobe), réencodage propre sinon. Specs par plateforme dans `configs/export_profiles.yaml` (résolution, codecs, durée max — tout est configurable, rien de figé dans le code).
+
 ### Générer une vidéo de test
 
 Pas de vidéo sous la main ? Générez-en une (mire animée + bip audio) :
@@ -373,6 +388,6 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 | 9 | Templates de montage (hook, barre, zoom, watermark) | ✅ Fait |
 | 10 | Métadonnées de publication (titres, hashtags, captions) | ✅ Fait |
 | 11 | Score de visibilité (8 sous-scores + recommandations) | ✅ Fait |
-| 12 | Export multi-plateforme | À venir |
+| 12 | Export multi-plateforme (dossiers prêts à publier) | ✅ Fait |
 | 13 | Pipeline complet + batch | À venir |
 | 14 | Interface Streamlit | À venir |
