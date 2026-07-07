@@ -97,6 +97,32 @@ python -m src.check_system
 
 ## Utilisation
 
+### 🚀 Pipeline complet en une commande (Phase 13)
+
+De la vidéo brute aux exports publiables, tout s'enchaîne automatiquement :
+
+```powershell
+# Fichier local ou URL YouTube/Twitch
+python -m src.pipeline.run input\podcast.mp4
+python -m src.pipeline.run "https://www.youtube.com/watch?v=XXXX"
+
+# Options principales
+python -m src.pipeline.run input\podcast.mp4 --top 3 --platform all
+python -m src.pipeline.run input\podcast.mp4 --subtitle-style pop_highlight --template punchy_short
+python -m src.pipeline.run input\podcast.mp4 --resume            # reprend où ça s'était arrêté
+python -m src.pipeline.run input\podcast.mp4 --force             # refait tout
+python -m src.pipeline.run input\podcast.mp4 --from-stage subtitles --to-stage export
+python -m src.pipeline.run input\podcast.mp4 --dry-run           # affiche le plan sans rien lancer
+
+# Batch : un dossier de vidéos ou un fichier texte (une source par ligne)
+python -m src.pipeline.batch input\
+python -m src.pipeline.batch sources.txt --top 3 --continue-on-error
+```
+
+Résultats : clips prêts à publier dans `output\<video>\exports\`, tableau de bord `output\<video>\pipeline_preview.html` (liens vers toutes les previews), état détaillé `pipeline_manifest.json` (reprise possible après interruption), rapport batch `output\batch_report.json` + `batch_preview.html`. Étapes, valeurs par défaut et comportements dans `configs/pipeline.yaml` (tout est surchargeable en CLI). En cas d'échec, la commande exacte de reprise est affichée ; `--keep-going` continue après l'échec d'une étape secondaire.
+
+### Étapes individuelles
+
 ### Ingérer une vidéo (Phase 2)
 
 ```powershell
@@ -389,5 +415,5 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 | 10 | Métadonnées de publication (titres, hashtags, captions) | ✅ Fait |
 | 11 | Score de visibilité (8 sous-scores + recommandations) | ✅ Fait |
 | 12 | Export multi-plateforme (dossiers prêts à publier) | ✅ Fait |
-| 13 | Pipeline complet + batch | À venir |
+| 13 | Pipeline complet + batch (une commande) | ✅ Fait |
 | 14 | Interface Streamlit | À venir |
