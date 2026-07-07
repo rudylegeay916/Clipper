@@ -273,6 +273,18 @@ start output\<nom_video>\posts\preview.html
 
 Résultats : `output/<nom_video>/metadata_posts.json` (3 variantes de titre par clip — direct / curiosité / punchy —, description sobre, 8-12 hashtags larges+niche+sujet, captions TikTok/Reels/Shorts, sujets et mots-clés détectés), galerie `posts/preview.html`, export `posts/posts.csv` (Excel-compatible). Les titres sont toujours construits à partir du contenu réel du clip (anti-clickbait). Lexique de sujets et hashtags modifiables dans `src/metadata/generate.py` (constantes en tête de fichier).
 
+### Scorer la visibilité des clips finaux (Phase 11)
+
+Score de publication 0-100 par clip final (distinct du score « moment fort » de la Phase 5), avec scores TikTok/Reels/Shorts, forces, faiblesses et recommandations concrètes — 100 % local et déterministe, jamais présenté comme une prédiction de viralité :
+
+```powershell
+# Prérequis : Phase 9 (les phases 10 et 3-8 enrichissent l'analyse si présentes)
+python -m src.visibility.score output/<nom_video>/metadata.json
+start output\<nom_video>\visibility\preview.html
+```
+
+Résultats : `visibility_report.json` (8 sous-scores pondérés : hook, rétention, clarté, rythme, sous-titres, titres, métadonnées, adéquation plateforme), galerie `visibility/preview.html`, tri rapide `visibility/visibility.csv`. Poids réglables dans `configs/visibility.yaml` (somme vérifiée automatiquement). Interprétation : 85-100 excellent potentiel · 70-84 bon · 55-69 améliorable · < 55 faible.
+
 ### Générer une vidéo de test
 
 Pas de vidéo sous la main ? Générez-en une (mire animée + bip audio) :
@@ -360,7 +372,7 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 | 8 | Sous-titres animés karaoke (ASS) | ✅ Fait |
 | 9 | Templates de montage (hook, barre, zoom, watermark) | ✅ Fait |
 | 10 | Métadonnées de publication (titres, hashtags, captions) | ✅ Fait |
-| 11 | Score de visibilité | À venir |
+| 11 | Score de visibilité (8 sous-scores + recommandations) | ✅ Fait |
 | 12 | Export multi-plateforme | À venir |
 | 13 | Pipeline complet + batch | À venir |
 | 14 | Interface Streamlit | À venir |
