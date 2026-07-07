@@ -1,0 +1,26 @@
+# ============================================================
+# Phase 11 - Score de visibilite des clips finaux
+# ============================================================
+# Poids des sous-scores (la somme DOIT faire 1.0, verifiee au
+# chargement). Mode 100% local et deterministe : le score estime
+# le respect des bonnes pratiques de publication, il ne garantit
+# JAMAIS la viralite.
+# ============================================================
+
+visibility:
+  weights:
+    hook: 0.22          # Vitesse et force de l'accroche
+    retention: 0.18     # Duree, densite, pauses, debut/fin propres
+    clarity: 0.14       # Idee identifiable, phrases comprehensibles, titre coherent
+    pacing: 0.12        # Debit raisonnable, respirations, pas de monotone
+    subtitles: 0.10     # Karaoke present, densite lisible
+    title: 0.10         # 3 variantes distinctes, ancrees, sans clickbait
+    metadata: 0.07      # Description, hashtags pertinents et non excessifs
+    platform_fit: 0.07  # Adequation du clip a la plateforme choisie
+
+  # Interpretation du score global (jamais une garantie de viralite)
+  categories:
+    - { min: 85, label: "excellent potentiel" }
+    - { min: 70, label: "bon potentiel" }
+    - { min: 55, label: "améliorable" }
+    - { min: 0,  label: "faible potentiel" }
