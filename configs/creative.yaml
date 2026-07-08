@@ -1,0 +1,39 @@
+# ============================================================
+# Phase 13.5 - Creative Engine : routage des durees et profils
+# ============================================================
+# Aucun score ni profil ne garantit la viralite ou la monetisation.
+# ============================================================
+
+creative:
+  # --- Routage selon la duree de la SOURCE (secondes) ---
+  routing:
+    short_max: 60           # < 60s  : preserve_short (video entiere, zero cut)
+    medium_max: 180         # 60-180 : preserve_medium (complete + variantes courtes)
+                            # > 180  : clipping_long (detection/scoring/decoupage)
+
+  # --- Profils de clips ---
+  clip_profiles:
+    performance_short:
+      min: 20
+      target: 40
+      max: 59
+    monetization_long:      # Compatible TikTok Creator Rewards (>= 61s technique)
+      min: 61
+      target: 75
+      max: 90
+    youtube_shorts_long:
+      min: 61
+      target: 90
+      max: 180
+
+  # --- Coherence narrative (clips longs) ---
+  narrative:
+    min_eligible_score: 60      # narrative_completeness_score minimal pour un clip long
+    max_silence_ratio: 0.35     # Part maximale de silence dans le clip
+    min_topic_consistency: 50   # Coherence de sujet minimale
+
+  # --- Sous-titres conditionnels ---
+  speech:
+    min_words: 8                # En-dessous : pas de parole significative
+    min_speech_ratio: 0.15      # Part minimale du clip couverte par de la parole
+    short_important_words: 4    # Dialogue court mais present -> sous-titres actives

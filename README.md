@@ -121,6 +121,8 @@ python -m src.pipeline.batch sources.txt --top 3 --continue-on-error
 
 Résultats : clips prêts à publier dans `output\<video>\exports\`, tableau de bord `output\<video>\pipeline_preview.html` (liens vers toutes les previews), état détaillé `pipeline_manifest.json` (reprise possible après interruption), rapport batch `output\batch_report.json` + `batch_preview.html`. Étapes, valeurs par défaut et comportements dans `configs/pipeline.yaml` (tout est surchargeable en CLI). En cas d'échec, la commande exacte de reprise est affichée ; `--keep-going` continue après l'échec d'une étape secondaire.
 
+**Creative Engine (Phase 13.5)** — le pipeline route selon la durée source : **< 60 s** = vidéo entière conservée (zéro cut, zéro allongement) ; **60-180 s** = version complète garantie + variantes courtes ; **> 180 s** = clips performance 20-59 s + clips longs 61-90 s uniquement si un passage narrativement cohérent existe (jamais d'élargissement artificiel). Options : `--clip-profile auto|performance|monetization|both`, `--subtitles auto|always|never` (pas de burn sans parole significative), `--music auto|none|keep|<track_id>` (bibliothèque locale `configs/music_library.yaml`, licences déclarées uniquement, ducking sous la voix), `--source-rights owned|licensed|third-party-authorized|unknown`. Hooks créatifs (5+ candidats/clip : POV, curiosity, reaction, question, punch) et `creative_score` dans `output/<video>/creative_manifest.json`. Seuils dans `configs/creative.yaml`. Aucun score ne garantit viralité ou monétisation.
+
 ### Étapes individuelles
 
 ### Ingérer une vidéo (Phase 2)

@@ -1,0 +1,26 @@
+# ============================================================
+# Phase 13.5 - Bibliotheque musicale locale
+# ============================================================
+# UNIQUEMENT des pistes locales (assets/music/) avec licence
+# declaree. Aucun telechargement automatique. Une piste sans
+# licence declaree n'est jamais utilisee.
+#
+# Champs par piste :
+#   id, path, mood (calm|energetic|dramatic|fun), bpm, energy (0-1),
+#   license (ex: CC0, achat, production), allowed_platforms,
+#   content_id_safe (true = sans risque Content ID YouTube),
+#   attribution_required
+#
+# Exemple :
+#   - id: chill_lofi_01
+#     path: assets/music/chill_lofi_01.mp3
+#     mood: calm
+#     bpm: 80
+#     energy: 0.3
+#     license: CC0
+#     allowed_platforms: [tiktok, reels, shorts]
+#     content_id_safe: true
+#     attribution_required: false
+# ============================================================
+
+tracks: []      # Bibliotheque vide par defaut : export sans musique, jamais d'echec
