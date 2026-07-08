@@ -13,8 +13,11 @@ import pytest
 from src.templates.apply import (
     apply_single_clip,
     apply_templates,
+    build_filtergraph,
     get_template,
+    hook_fontsize,
     load_template_definitions,
+    wrap_hook_lines,
     wrap_hook_text,
 )
 from src.utils.config import load_config
@@ -53,9 +56,75 @@ def test_wrap_hook_text():
                              max_chars_per_line=20)
     lines = wrapped.split("\n")
     assert len(lines) == 2
-    assert all(len(l) <= 24 for l in lines)
-    assert lines[-1].endswith("...")
+    assert "argent" in " ".join(lines)
+    assert "argent" in lines[-1]
     assert wrap_hook_text("Court", max_chars_per_line=20) == "Court"
+
+
+def test_hook_short_stays_single_centered_line():
+    lines = wrap_hook_lines("Her answer was WILD", max_chars_per_line=22)
+
+    assert lines == ["Her answer was WILD"]
+
+
+def test_hook_long_wraps_to_exactly_two_balanced_lines():
+    lines = wrap_hook_lines("Look what she said about NEYMAR JR",
+                            max_chars_per_line=22)
+
+    assert lines == ["Look what she said", "about NEYMAR JR"]
+    assert len(lines) == 2
+
+
+def test_hook_never_creates_third_line_or_cuts_words():
+    text = "Her Neymar answer was WILD and totally unexpected today"
+    lines = wrap_hook_lines(text, max_chars_per_line=18)
+
+    assert len(lines) <= 2
+    assert " ".join(lines).split() == text.split()
+
+
+def test_hook_utf8_apostrophe_and_emoji_preserved():
+    text = "C'est énorme 😳 Neymar répond enfin"
+    lines = wrap_hook_lines(text, max_chars_per_line=18)
+
+    assert "C'est" in " ".join(lines)
+    assert "énorme" in " ".join(lines)
+    assert "😳" in " ".join(lines)
+
+
+def test_filtergraph_centers_each_hook_line_independently(tmp_path):
+    first = tmp_path / "hook_1.txt"
+    second = tmp_path / "hook_2.txt"
+    first.write_text("Look what she said", encoding="utf-8")
+    second.write_text("about NEYMAR JR", encoding="utf-8")
+
+    _extra, graph, effects = build_filtergraph(
+        SETTINGS, get_template("creative_social"), 3.0, 540, 960,
+        [first, second], None,
+    )
+
+    assert effects == ["subtle_zoom", "hook_title", "progress_bar"]
+    assert graph.count("drawtext=textfile=") == 2
+    assert graph.count("x=(w-text_w)/2") == 2
+    assert "hook_1.txt" in graph and "hook_2.txt" in graph
+    assert "\\n" not in graph.lower()
+
+
+def test_hook_position_and_spacing_are_configurable(tmp_path):
+    first = tmp_path / "hook_1.txt"
+    second = tmp_path / "hook_2.txt"
+    first.write_text("Her Neymar answer", encoding="utf-8")
+    second.write_text("was WILD", encoding="utf-8")
+    template = get_template("creative_social")
+    fontsize = hook_fontsize(
+        540, 960, template["hook"], ["Her Neymar answer", "was WILD"])
+    spacing = round(960 * template["hook"]["line_spacing_ratio"])
+
+    _extra, graph, _effects = build_filtergraph(
+        SETTINGS, template, 3.0, 540, 960, [first, second], None)
+
+    assert f"y=h*{template['hook']['y_ratio']}" in graph
+    assert f"+{fontsize + spacing}" in graph
 
 
 # ---------------------------------------------------------------------------
@@ -115,6 +184,19 @@ def test_apply_single_clip_punchy(subtitled_clip, tmp_path):
     )
     assert result["fallback"] is None
     assert destination.is_file()
+
+
+def test_apply_single_clip_creative_social_two_lines(subtitled_clip, tmp_path):
+    """creative_social rend deux lignes centrees sans fallback."""
+    destination = tmp_path / "creative.mp4"
+    result = apply_single_clip(
+        subtitled_clip, destination, "Look what she said about NEYMAR JR",
+        SETTINGS, get_template("creative_social"), crf=28, preset="ultrafast",
+    )
+
+    assert result["fallback"] is None
+    assert destination.is_file()
+    assert "hook_title" in result["effects_applied"]
 
 
 def test_missing_logo_never_crashes(subtitled_clip, tmp_path):
@@ -216,6 +298,34 @@ def test_apply_templates_full_flow(fake_output_dir):
     modification_time = (final_dir / clip["final_file"]).stat().st_mtime
     apply_templates(str(fake_output_dir / "metadata.json"))
     assert (final_dir / clip["final_file"]).stat().st_mtime == modification_time
+
+
+def test_apply_templates_prefers_creative_manifest_selected_hook(fake_output_dir):
+    """Un hook personnalise du Creative Engine prime les anciennes donnees."""
+    creative_manifest = {
+        "clips": {
+            "1": {
+                "rank": 1,
+                "selected_hook": {
+                    "type": "custom",
+                    "text": "Look what she said about NEYMAR JR",
+                    "score": 100.0,
+                },
+            }
+        }
+    }
+    (fake_output_dir / "creative_manifest.json").write_text(
+        json.dumps(creative_manifest), encoding="utf-8")
+
+    manifest_path = apply_templates(
+        str(fake_output_dir / "metadata.json"),
+        force=True,
+        template_name="creative_social",
+    )
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["clips"][0]["hook_text"] == "Look what she said about NEYMAR JR"
+    assert manifest["clips"][0]["fallback"] is None
 
 
 def test_apply_templates_requires_phase8(fake_output_dir):

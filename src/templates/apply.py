@@ -64,28 +64,53 @@ def get_template(name: str) -> dict:
 
 def wrap_hook_text(text: str, max_chars_per_line: int = 24, max_lines: int = 2) -> str:
     """
-    Coupe le hook en lignes courtes lisibles sur mobile (retour au mot),
-    tronque avec '...' au-dela de max_lines.
+    Coupe le hook en lignes courtes lisibles sur mobile (retour au mot).
+    """
+    return "\n".join(wrap_hook_lines(text, max_chars_per_line, max_lines))
+
+
+def wrap_hook_lines(text: str, max_chars_per_line: int = 24,
+                    max_lines: int = 2) -> list[str]:
+    """
+    Nettoie et coupe le hook en 1-2 lignes equilibrees, sans couper les mots.
+    Si le hook est trop long, il reste sur 2 lignes et la taille sera ajustee
+    au rendu plutot que de tronquer silencieusement le sens.
     """
     words = text.strip().split()
-    lines: list[str] = []
-    current = ""
-    for word in words:
-        candidate = f"{current} {word}".strip()
-        if len(candidate) <= max_chars_per_line or not current:
-            current = candidate
-        else:
-            lines.append(current)
-            current = word
-            if len(lines) == max_lines:
-                break
-    if len(lines) < max_lines and current:
-        lines.append(current)
-    if len(lines) == max_lines and (current not in lines or len(words) > sum(len(l.split()) for l in lines)):
-        remaining = sum(len(l.split()) for l in lines)
-        if remaining < len(words):
-            lines[-1] = lines[-1].rstrip(",;:.") + "..."
-    return "\n".join(lines[:max_lines])
+    if not words:
+        return []
+
+    normalized = " ".join(words)
+    if max_lines <= 1 or len(normalized) <= max_chars_per_line:
+        return [normalized]
+
+    best: tuple[float, list[str]] | None = None
+    for split_at in range(1, len(words)):
+        first = " ".join(words[:split_at])
+        second = " ".join(words[split_at:])
+        if not second:
+            continue
+        short_last_line_penalty = 10 if len(second) <= 4 and len(words[split_at:]) == 1 else 0
+        overflow = max(0, len(first) - max_chars_per_line) + max(0, len(second) - max_chars_per_line)
+        balance = abs(len(first) - len(second))
+        score = overflow * 6 + balance + short_last_line_penalty
+        if best is None or score < best[0]:
+            best = (score, [first, second])
+    return best[1] if best else [normalized]
+
+
+def hook_fontsize(width: int, height: int, hook: dict, lines: list[str]) -> int:
+    """Taille du hook avec reduction simple si deux lignes restent larges."""
+    base = round(height * hook.get("fontsize_ratio", 0.045))
+    max_width_ratio = hook.get("max_width_ratio", 0.85)
+    longest = max((len(line) for line in lines), default=0)
+    if not longest:
+        return base
+    estimated_width = longest * base * 0.56
+    max_width = width * max_width_ratio
+    if estimated_width <= max_width:
+        return base
+    return max(24, round(base * max_width / estimated_width))
 
 
 def _find_font_file() -> Path | None:
@@ -108,7 +133,7 @@ def _find_font_file() -> Path | None:
 # ---------------------------------------------------------------------------
 
 def build_filtergraph(settings: dict, template: dict, duration: float,
-                      width: int, height: int, hook_file: Path | None,
+                      width: int, height: int, hook_file: Path | list[Path] | None,
                       logo_path: Path | None) -> tuple[list, str, list[str]]:
     """
     Assemble les entrees FFmpeg supplementaires et le filter_complex
@@ -135,26 +160,34 @@ def build_filtergraph(settings: dict, template: dict, duration: float,
     # --- Hook textuel en haut (zone sure) ---
     if hook_file is not None:
         hook = template.get("hook", {})
-        fontsize = round(height * hook.get("fontsize_ratio", 0.045))
+        hook_files = hook_file if isinstance(hook_file, list) else [hook_file]
+        hook_files = [path for path in hook_files if path is not None]
+        hook_lines = [path.read_text(encoding="utf-8") for path in hook_files]
+        fontsize = hook_fontsize(width, height, hook, hook_lines)
         y_position = hook.get("y_ratio", 0.13)
-        drawtext = (
-            f"drawtext=textfile={format_filter_path(hook_file)}"
-            f":fontsize={fontsize}:fontcolor={hook.get('color', 'white')}"
-            f":borderw={hook.get('border', 4)}:bordercolor=black"
-            f":x=(w-text_w)/2:y=h*{y_position}"
-            f":enable='lt(t,{settings.get('hook_duration', 3.0)})'"
-        )
-        # Phase 13.5 : animation courte et discrete (fondu d'entree)
-        fade_in = hook.get("fade_in")
-        if fade_in:
-            drawtext += f":alpha='min(1,t/{fade_in})'"
+        line_spacing = round(height * hook.get("line_spacing_ratio", 0.012))
+        block_height = len(hook_files) * fontsize + max(0, len(hook_files) - 1) * line_spacing
+        base_y = f"h*{y_position}-{round(block_height / 2)}"
         font_file = _find_font_file()
-        if font_file is not None:
-            drawtext += f":fontfile={format_filter_path(font_file)}"
-        if hook.get("box"):
-            drawtext += f":box=1:boxcolor={hook.get('box_color', 'black@0.5')}:boxborderw=18"
-        steps.append(drawtext)
-        effects.append("hook_title")
+        for line_index, path in enumerate(hook_files):
+            drawtext = (
+                f"drawtext=textfile={format_filter_path(path)}"
+                f":fontsize={fontsize}:fontcolor={hook.get('color', 'white')}"
+                f":borderw={hook.get('border', 4)}:bordercolor=black"
+                f":x=(w-text_w)/2:y={base_y}+{line_index * (fontsize + line_spacing)}"
+                f":enable='lt(t,{settings.get('hook_duration', 3.0)})'"
+            )
+            # Phase 13.5 : animation courte et discrete (fondu d'entree)
+            fade_in = hook.get("fade_in")
+            if fade_in:
+                drawtext += f":alpha='min(1,t/{fade_in})'"
+            if font_file is not None:
+                drawtext += f":fontfile={format_filter_path(font_file)}"
+            if hook.get("box"):
+                drawtext += f":box=1:boxcolor={hook.get('box_color', 'black@0.5')}:boxborderw=18"
+            steps.append(drawtext)
+        if hook_files:
+            effects.append("hook_title")
 
     if steps:
         chain += ",".join(steps)
@@ -226,20 +259,23 @@ def apply_single_clip(subtitled_path: Path, destination: Path, hook_text: str | 
             )
 
     # --- Fichier texte du hook (drawtext:textfile= evite tout echappement) ---
-    hook_file = None
+    hook_files: list[Path] = []
     if settings.get("hook_title", True) and hook_text:
         hook = template.get("hook", {})
-        wrapped = wrap_hook_text(
+        lines = wrap_hook_lines(
             hook_text, max_chars_per_line=hook.get("max_chars_per_line", 24)
         )
         if hook.get("uppercase"):
-            wrapped = wrapped.upper()
-        hook_file = destination.parent / f".hook_{destination.stem}.txt"
-        hook_file.write_text(wrapped, encoding="utf-8")
+            lines = [line.upper() for line in lines]
+        for index, line in enumerate(lines[:2], start=1):
+            hook_file = destination.parent / f".hook_{destination.stem}_{index:02d}.txt"
+            hook_file.write_text(line, encoding="utf-8")
+            hook_files.append(hook_file)
 
     try:
         extra_inputs, graph, effects = build_filtergraph(
-            settings, template, duration, width, height, hook_file, logo_path
+            settings, template, duration, width, height,
+            hook_files if hook_files else None, logo_path
         )
         run_ffmpeg([
             "-i", subtitled_path,
@@ -273,7 +309,7 @@ def apply_single_clip(subtitled_path: Path, destination: Path, hook_text: str | 
             "errors": [str(error).splitlines()[-1]],
         }
     finally:
-        if hook_file is not None:
+        for hook_file in hook_files:
             hook_file.unlink(missing_ok=True)
 
 
@@ -346,8 +382,15 @@ def build_final_preview_html(manifest: dict) -> str:
 # Point d'entree
 # ---------------------------------------------------------------------------
 
+def _merge_rank_entries(existing: list[dict], updated: list[dict]) -> list[dict]:
+    by_rank = {int(item["rank"]): item for item in existing if "rank" in item}
+    for item in updated:
+        by_rank[int(item["rank"])] = item
+    return [by_rank[rank] for rank in sorted(by_rank)]
+
+
 def apply_templates(source: str, force: bool = False, template_name: str | None = None,
-                    top: int | None = None) -> Path:
+                    top: int | None = None, rank: int | None = None) -> Path:
     """
     Applique le template de montage aux clips sous-titres et ecrit
     output/<nom_video>/final_manifest.json. Retourne ce chemin.
@@ -377,11 +420,13 @@ def apply_templates(source: str, force: bool = False, template_name: str | None 
 
     # --- Reprise ---
     overwrite = force or config.get("pipeline", {}).get("overwrite", False)
-    if manifest_path.is_file() and not overwrite:
+    existing_manifest = {}
+    if manifest_path.is_file():
         with open(manifest_path, encoding="utf-8") as f:
-            existing = json.load(f)
+            existing_manifest = json.load(f)
+    if manifest_path.is_file() and not overwrite:
         if all((final_dir / c["final_file"]).is_file()
-               for c in existing.get("clips", [])):
+               for c in existing_manifest.get("clips", [])):
             logger.info("Reprise : clips finaux deja generes (%s)", manifest_path)
             return manifest_path
         logger.info("Manifest present mais fichiers manquants : regeneration ...")
@@ -397,6 +442,9 @@ def apply_templates(source: str, force: bool = False, template_name: str | None 
         subtitles_manifest = json.load(f)
 
     subtitled_clips = subtitles_manifest.get("clips", [])
+    if rank:
+        subtitled_clips = [clip for clip in subtitled_clips
+                           if int(clip.get("rank", 0)) == int(rank)]
     if top:
         subtitled_clips = subtitled_clips[:top]
     if not subtitled_clips:
@@ -466,6 +514,9 @@ def apply_templates(source: str, force: bool = False, template_name: str | None 
         )
 
     # --- Manifest + galerie ---
+    if rank and existing_manifest:
+        manifest_clips = _merge_rank_entries(
+            existing_manifest.get("clips", []), manifest_clips)
     manifest = {
         "source": subtitles_manifest["source"],
         "final_dir": str(final_dir),
@@ -499,13 +550,16 @@ def main() -> int:
                         help="Template de configs/templates.yaml (defaut : config.yaml)")
     parser.add_argument("--top", type=int, default=None,
                         help="Ne monte que les N meilleurs clips")
+    parser.add_argument("--rank", type=int, default=None,
+                        help="Ne monte que le clip de rang N")
     parser.add_argument("--force", action="store_true",
                         help="Regenere meme si les clips finaux existent")
     args = parser.parse_args()
 
     try:
         manifest_path = apply_templates(
-            args.source, force=args.force, template_name=args.template, top=args.top
+            args.source, force=args.force, template_name=args.template,
+            top=args.top, rank=args.rank
         )
     except (FFmpegError, FileNotFoundError, ValueError, RuntimeError) as error:
         logger.error("%s", error)

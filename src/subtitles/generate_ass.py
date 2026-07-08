@@ -15,6 +15,8 @@ evenement par groupe, sans tags.
 
 import re
 
+SUBTITLE_GAP = 0.02
+
 
 # ---------------------------------------------------------------------------
 # Conversions elementaires
@@ -167,28 +169,42 @@ def build_ass(groups: list[list[dict]], style: dict, karaoke: bool = True,
     )
 
     events = []
+    previous_display_end: float | None = None
     for index, group in enumerate(groups):
+        if not group:
+            continue
         display_start = max(0.0, group[0]["start"] - lead_in)
+        if previous_display_end is not None:
+            display_start = max(display_start, previous_display_end + SUBTITLE_GAP)
         display_end = group[-1]["end"] + hold
         if index + 1 < len(groups):
-            # Ne jamais chevaucher le groupe suivant
-            next_start = max(0.0, groups[index + 1][0]["start"] - lead_in)
-            display_end = min(display_end, max(display_start, next_start - 0.01))
+            # Ne jamais chevaucher le groupe suivant. Le lead_in du groupe
+            # suivant est tronque s'il mordrait sur le groupe courant.
+            next_start = max(
+                max(0.0, groups[index + 1][0]["start"] - lead_in),
+                group[-1]["end"] + SUBTITLE_GAP,
+            )
+            display_end = min(display_end, next_start - SUBTITLE_GAP)
+        if display_end <= display_start:
+            continue
+        previous_display_end = display_end
 
         if not karaoke:
             text = " ".join(_word_text(w, style) for w in group)
-            events.append(_dialogue(display_start, display_end, text))
+            if text.strip():
+                events.append(_dialogue(display_start, display_end, text))
             continue
 
         # Karaoke : un evenement par mot actif, couvrant [debut du mot ->
         # debut du mot suivant] (le highlight reste sur le mot pendant
         # les micro-pauses entre les mots)
         for word_index, word in enumerate(group):
-            start = display_start if word_index == 0 else word["start"]
+            start = display_start if word_index == 0 else max(word["start"], display_start)
             end = (
                 group[word_index + 1]["start"]
                 if word_index + 1 < len(group) else display_end
             )
+            end = min(end, display_end)
             if end <= start:
                 continue
             parts = []

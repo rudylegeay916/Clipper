@@ -222,8 +222,19 @@ def _load_json_if_exists(path: Path) -> dict | None:
     return None
 
 
+def _merge_rank_exports(existing: list[dict], updated: list[dict]) -> list[dict]:
+    by_key = {
+        (int(item["rank"]), item["platform"]): item
+        for item in existing
+        if "rank" in item and "platform" in item
+    }
+    for item in updated:
+        by_key[(int(item["rank"]), item["platform"])] = item
+    return [by_key[key] for key in sorted(by_key)]
+
+
 def export_clips(source: str, force: bool = False, platform: str = "recommended",
-                 top: int | None = None) -> Path:
+                 top: int | None = None, rank: int | None = None) -> Path:
     """
     Exporte les clips finaux vers les dossiers plateformes et ecrit
     output/<nom_video>/exports/export_manifest.json.
@@ -250,11 +261,13 @@ def export_clips(source: str, force: bool = False, platform: str = "recommended"
 
     # --- Reprise ---
     overwrite = force or config.get("pipeline", {}).get("overwrite", False)
-    if manifest_path.is_file() and not overwrite:
+    existing_manifest = {}
+    if manifest_path.is_file():
         with open(manifest_path, encoding="utf-8") as f:
-            existing = json.load(f)
+            existing_manifest = json.load(f)
+    if manifest_path.is_file() and not overwrite:
         if all((exports_dir / e["platform"] / e["clip_dir"] / e["exported_file"]).is_file()
-               for e in existing.get("exports", [])):
+               for e in existing_manifest.get("exports", [])):
             logger.info("Reprise : exports deja generes (%s)", manifest_path)
             return manifest_path
         logger.info("Manifest present mais fichiers manquants : regeneration ...")
@@ -276,6 +289,9 @@ def export_clips(source: str, force: bool = False, platform: str = "recommended"
         visibility_by_rank = {c["rank"]: c for c in visibility_data["clips"]}
 
     final_clips = final_manifest.get("clips", [])
+    if rank:
+        final_clips = [clip for clip in final_clips
+                       if int(clip.get("rank", 0)) == int(rank)]
     if top:
         final_clips = final_clips[:top]
 
@@ -375,6 +391,8 @@ def export_clips(source: str, force: bool = False, platform: str = "recommended"
             logger.info("  -> %s (%s)", exported_name, encoding_mode)
 
     # --- Manifest + preview ---
+    if rank and existing_manifest:
+        exports = _merge_rank_exports(existing_manifest.get("exports", []), exports)
     manifest = {
         "source": final_manifest["source"],
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -407,12 +425,14 @@ def main() -> int:
                         help="recommended (defaut) : plateforme conseillee par clip | "
                              "all : les trois versions | tiktok/reels/shorts")
     parser.add_argument("--top", type=int, default=None)
+    parser.add_argument("--rank", type=int, default=None)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
     try:
         manifest_path = export_clips(
-            args.source, force=args.force, platform=args.platform, top=args.top
+            args.source, force=args.force, platform=args.platform, top=args.top,
+            rank=args.rank,
         )
     except (FFmpegError, FileNotFoundError, ValueError, RuntimeError) as error:
         logger.error("%s", error)

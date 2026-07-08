@@ -172,6 +172,33 @@ def test_from_to_stage(mocked_runners):
         run_pipeline("x.mp4", {"from_stage": "inexistante"})
 
 
+def test_rerender_from_metadata_starts_at_templates_for_single_rank(mocked_runners):
+    """Le rerender de hook repart du metadata existant et ne relance pas l'amont."""
+    calls, output_dir = mocked_runners
+    metadata_path = output_dir / "metadata.json"
+    metadata_path.write_text("{}", encoding="utf-8")
+
+    manifest = run_pipeline(
+        str(metadata_path),
+        {
+            "resume": True,
+            "force": True,
+            "from_stage": "templates",
+            "to_stage": "export",
+            "rank": 2,
+        },
+    )
+
+    assert _called_ids(calls) == ["templates", "creative_music", "metadata", "visibility", "export"]
+    assert all(options["rank"] == 2 for _stage, options, _force in calls)
+    assert all(force is True for _stage, _options, force in calls)
+    statuses = {s["id"]: s["status"] for s in manifest["stages"]}
+    assert statuses["ingestion"] == "skipped"
+    assert statuses["transcription"] == "skipped"
+    assert statuses["cutting"] == "skipped"
+    assert statuses["subtitles"] == "skipped"
+
+
 def test_essential_failure_stops(mocked_runners):
     """Echec d'une etape essentielle -> arret, etapes suivantes sautees."""
     calls, _ = mocked_runners
