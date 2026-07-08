@@ -625,7 +625,15 @@ def _load_json_if_exists(path: Path) -> dict | None:
     return None
 
 
-def score_visibility(source: str, force: bool = False, top: int | None = None) -> Path:
+def _merge_rank_entries(existing: list[dict], updated: list[dict]) -> list[dict]:
+    by_rank = {int(item["rank"]): item for item in existing if "rank" in item}
+    for item in updated:
+        by_rank[int(item["rank"])] = item
+    return [by_rank[rank] for rank in sorted(by_rank)]
+
+
+def score_visibility(source: str, force: bool = False, top: int | None = None,
+                     rank: int | None = None) -> Path:
     """Evalue la visibilite des clips finaux et ecrit visibility_report.json."""
     config = load_config()
     visibility_config = load_visibility_config()
@@ -646,6 +654,10 @@ def score_visibility(source: str, force: bool = False, top: int | None = None) -
     visibility_dir = output_dir / "visibility"
 
     overwrite = force or config.get("pipeline", {}).get("overwrite", False)
+    existing_report = {}
+    if report_path.is_file():
+        with open(report_path, encoding="utf-8") as f:
+            existing_report = json.load(f)
     if report_path.is_file() and not overwrite:
         logger.info("Reprise : visibility_report.json existe deja (%s)", report_path)
         return report_path
@@ -674,6 +686,9 @@ def score_visibility(source: str, force: bool = False, top: int | None = None) -
     posts_by_rank = ({p["rank"]: p for p in posts_data["posts"]} if posts_data else {})
 
     final_clips = final_manifest.get("clips", [])
+    if rank:
+        final_clips = [clip for clip in final_clips
+                       if int(clip.get("rank", 0)) == int(rank)]
     if top:
         final_clips = final_clips[:top]
 
@@ -696,6 +711,8 @@ def score_visibility(source: str, force: bool = False, top: int | None = None) -
             result["recommended_platform"], result["source_highlight_score"],
         )
 
+    if rank and existing_report:
+        clips = _merge_rank_entries(existing_report.get("clips", []), clips)
     clips.sort(key=lambda c: -c["visibility_score"])
     report = {
         "source": final_manifest["source"],
@@ -727,11 +744,13 @@ def main() -> int:
     parser.add_argument("source",
                         help="Chemin d'un fichier video, d'un metadata.json, ou une URL")
     parser.add_argument("--top", type=int, default=None)
+    parser.add_argument("--rank", type=int, default=None)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
     try:
-        report_path = score_visibility(args.source, force=args.force, top=args.top)
+        report_path = score_visibility(args.source, force=args.force, top=args.top,
+                                       rank=args.rank)
     except (FileNotFoundError, ValueError, RuntimeError) as error:
         logger.error("%s", error)
         return 1

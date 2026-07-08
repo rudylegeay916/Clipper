@@ -18,6 +18,8 @@ templates:
       box: false               # Pas de fond
       uppercase: false
       max_chars_per_line: 22
+      line_spacing_ratio: 0.012
+      max_width_ratio: 0.85
     progress_bar:
       height: 6
       color: "white@0.65"
@@ -36,6 +38,8 @@ templates:
       box: false
       uppercase: false
       max_chars_per_line: 22
+      line_spacing_ratio: 0.012
+      max_width_ratio: 0.85
       fade_in: 0.35            # Animation courte et discrete (fondu d'entree)
       highlight_word: true     # Le mot fort du hook en jaune
     progress_bar:
@@ -56,6 +60,8 @@ templates:
       box_color: "black@0.55"
       uppercase: true
       max_chars_per_line: 16
+      line_spacing_ratio: 0.012
+      max_width_ratio: 0.85
     progress_bar:
       height: 10
       color: "yellow@0.8"

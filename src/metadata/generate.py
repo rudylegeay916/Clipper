@@ -354,7 +354,15 @@ def write_posts_csv(result: dict, csv_path: Path) -> None:
 # Point d'entree
 # ---------------------------------------------------------------------------
 
-def generate_posts(source: str, force: bool = False, top: int | None = None) -> Path:
+def _merge_rank_entries(existing: list[dict], updated: list[dict]) -> list[dict]:
+    by_rank = {int(item["rank"]): item for item in existing if "rank" in item}
+    for item in updated:
+        by_rank[int(item["rank"])] = item
+    return [by_rank[rank] for rank in sorted(by_rank)]
+
+
+def generate_posts(source: str, force: bool = False, top: int | None = None,
+                   rank: int | None = None) -> Path:
     """
     Genere les metadonnees de publication de chaque clip final et ecrit
     output/<nom_video>/metadata_posts.json (+ preview HTML + CSV).
@@ -374,6 +382,10 @@ def generate_posts(source: str, force: bool = False, top: int | None = None) -> 
     result_path = output_dir / "metadata_posts.json"
 
     overwrite = force or config.get("pipeline", {}).get("overwrite", False)
+    existing_result = {}
+    if result_path.is_file():
+        with open(result_path, encoding="utf-8") as f:
+            existing_result = json.load(f)
     if result_path.is_file() and not overwrite:
         logger.info("Reprise : metadata_posts.json existe deja (%s)", result_path)
         return result_path
@@ -411,6 +423,9 @@ def generate_posts(source: str, force: bool = False, top: int | None = None) -> 
                           for c in json.load(f)["clips"]}
 
     final_clips = final_manifest.get("clips", [])
+    if rank:
+        final_clips = [clip for clip in final_clips
+                       if int(clip.get("rank", 0)) == int(rank)]
     if top:
         final_clips = final_clips[:top]
 
@@ -459,6 +474,8 @@ def generate_posts(source: str, force: bool = False, top: int | None = None) -> 
         logger.info("Post #%d [%s] : %s", clip["rank"], platform, titles[0][:60])
 
     # --- Ecriture ---
+    if rank and existing_result:
+        posts = _merge_rank_entries(existing_result.get("posts", []), posts)
     result = {
         "source": final_manifest["source"],
         "mode": "local_rules",           # Aucun appel API externe
@@ -490,11 +507,13 @@ def main() -> int:
     parser.add_argument("source",
                         help="Chemin d'un fichier video, d'un metadata.json, ou une URL")
     parser.add_argument("--top", type=int, default=None)
+    parser.add_argument("--rank", type=int, default=None)
     parser.add_argument("--force", action="store_true")
     args = parser.parse_args()
 
     try:
-        result_path = generate_posts(args.source, force=args.force, top=args.top)
+        result_path = generate_posts(args.source, force=args.force, top=args.top,
+                                     rank=args.rank)
     except (FileNotFoundError, ValueError, RuntimeError) as error:
         logger.error("%s", error)
         return 1

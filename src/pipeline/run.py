@@ -155,26 +155,30 @@ def _run_templates(ctx):
     from src.templates.apply import apply_templates
     return apply_templates(str(ctx["metadata_path"]), force=ctx["force"],
                            template_name=ctx["options"].get("template"),
-                           top=ctx["options"].get("top"))
+                           top=ctx["options"].get("top"),
+                           rank=ctx["options"].get("rank"))
 
 
 def _run_metadata(ctx):
     from src.metadata.generate import generate_posts
     return generate_posts(str(ctx["metadata_path"]), force=ctx["force"],
-                          top=ctx["options"].get("top"))
+                          top=ctx["options"].get("top"),
+                          rank=ctx["options"].get("rank"))
 
 
 def _run_visibility(ctx):
     from src.visibility.score import score_visibility
     return score_visibility(str(ctx["metadata_path"]), force=ctx["force"],
-                            top=ctx["options"].get("top"))
+                            top=ctx["options"].get("top"),
+                            rank=ctx["options"].get("rank"))
 
 
 def _run_export(ctx):
     from src.export.platforms import export_clips
     return export_clips(str(ctx["metadata_path"]), force=ctx["force"],
                         platform=ctx["options"].get("platform", "recommended"),
-                        top=ctx["options"].get("top"))
+                        top=ctx["options"].get("top"),
+                        rank=ctx["options"].get("rank"))
 
 
 RUNNERS = {
@@ -332,6 +336,13 @@ def run_pipeline(source: str, cli_options: dict | None = None) -> dict:
         "stages": [], "last_completed_stage": None,
     }
     output_dir: Path | None = None
+    source_path = Path(source)
+    if from_index > 0 and source_path.suffix.lower() == ".json":
+        metadata_path = source_path.expanduser().resolve()
+        if not metadata_path.is_file():
+            raise FileNotFoundError(f"Fichier introuvable : {metadata_path}")
+        context["metadata_path"] = metadata_path
+        output_dir = metadata_path.parent
     failed_essential = False
 
     for index, stage in enumerate(STAGES):
@@ -347,7 +358,7 @@ def run_pipeline(source: str, cli_options: dict | None = None) -> dict:
                     or (stage_id == "preview" and options.get("skip_preview")))
         # L'ingestion resout metadata_path : toujours executee (reprise
         # interne quasi instantanee), meme hors plage
-        must_resolve = stage_id == "ingestion"
+        must_resolve = stage_id == "ingestion" and context["metadata_path"] is None
 
         if failed_essential:
             entry["status"] = "skipped"
@@ -527,6 +538,8 @@ def main() -> int:
     )
     parser.add_argument("source", help="Fichier video local ou URL")
     parser.add_argument("--top", type=int, default=None)
+    parser.add_argument("--rank", type=int, default=None,
+                        help="Ne recalcule que le clip de rang N pour les etapes compatibles")
     parser.add_argument("--platform", default=None,
                         choices=["recommended", "all", "tiktok", "reels", "shorts"])
     parser.add_argument("--subtitle-style", dest="subtitle_style", default=None)

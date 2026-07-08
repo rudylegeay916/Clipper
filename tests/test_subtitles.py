@@ -27,6 +27,30 @@ def _words(pairs):
     return [{"word": w, "start": s, "end": e} for w, s, e in pairs]
 
 
+def _parse_ass_time(value):
+    hours, minutes, rest = value.split(":")
+    seconds, centiseconds = rest.split(".")
+    return (
+        int(hours) * 3600
+        + int(minutes) * 60
+        + int(seconds)
+        + int(centiseconds) / 100
+    )
+
+
+def _dialogue_events(content):
+    events = []
+    for line in content.splitlines():
+        if line.startswith("Dialogue:"):
+            parts = line.split(",", 9)
+            events.append({
+                "start": _parse_ass_time(parts[1]),
+                "end": _parse_ass_time(parts[2]),
+                "text": parts[9],
+            })
+    return events
+
+
 # ---------------------------------------------------------------------------
 # Conversions
 # ---------------------------------------------------------------------------
@@ -150,6 +174,106 @@ def test_build_ass_timestamps_ordered(bold_classic):
         if line.startswith("Dialogue:"):
             starts.append(line.split(",")[1])
     assert starts == sorted(starts)
+
+
+def test_karaoke_events_do_not_overlap_between_groups(bold_classic):
+    """Le dernier evenement d'un groupe est tronque avant le groupe suivant."""
+    words = _words([
+        ("do", 0.10, 0.24),
+        ("you", 0.26, 0.36),
+        ("want", 0.36, 0.48),
+        ("to", 0.48, 0.58),
+        ("know", 0.54, 0.66),
+        ("what", 0.66, 0.78),
+    ])
+    groups = group_words(words, max_words_per_line=4, gap_threshold=0.6)
+    events = _dialogue_events(build_ass(groups, bold_classic, karaoke=True))
+
+    assert len(groups) == 2
+    for previous, current in zip(events, events[1:]):
+        assert previous["end"] <= current["start"]
+
+
+def test_last_word_is_clamped_before_next_group(bold_classic):
+    words = _words([
+        ("one", 1.00, 1.20),
+        ("two", 1.22, 1.50),
+        ("three", 1.45, 1.70),
+    ])
+    groups = group_words(words, max_words_per_line=2, gap_threshold=0.6)
+    events = _dialogue_events(
+        build_ass(groups, bold_classic, karaoke=True, lead_in=0.08, hold=0.25)
+    )
+
+    assert "TWO" in events[1]["text"]
+    assert "THREE" in events[2]["text"]
+    assert events[1]["end"] <= events[2]["start"]
+
+
+def test_lead_in_never_starts_before_previous_group_finishes(bold_classic):
+    words = _words([
+        ("alpha", 2.00, 2.40),
+        ("beta", 2.45, 2.70),
+    ])
+    groups = group_words(words, max_words_per_line=1, gap_threshold=0.6)
+    events = _dialogue_events(
+        build_ass(groups, bold_classic, karaoke=True, lead_in=0.20, hold=0.10)
+    )
+
+    assert events[1]["start"] >= events[0]["end"]
+
+
+def test_hold_is_truncated_when_next_group_starts(bold_classic):
+    words = _words([
+        ("first", 3.00, 3.30),
+        ("second", 3.50, 3.80),
+    ])
+    groups = group_words(words, max_words_per_line=1, gap_threshold=0.6)
+    events = _dialogue_events(
+        build_ass(groups, bold_classic, karaoke=True, lead_in=0.0, hold=1.0)
+    )
+
+    assert events[0]["end"] < 4.30
+    assert events[0]["end"] <= events[1]["start"]
+
+
+def test_only_one_group_text_active_at_any_timestamp(bold_classic):
+    words = _words([
+        ("a", 0.00, 0.20),
+        ("b", 0.22, 0.40),
+        ("c", 0.38, 0.60),
+        ("d", 0.62, 0.80),
+    ])
+    groups = group_words(words, max_words_per_line=2, gap_threshold=0.6)
+    events = _dialogue_events(build_ass(groups, bold_classic, karaoke=True))
+
+    for timestamp in [i / 100 for i in range(0, 100)]:
+        active = [e for e in events if e["start"] <= timestamp < e["end"]]
+        assert len(active) <= 1
+
+
+def test_dialogue_events_are_sorted_and_positive_duration(bold_classic):
+    words = _words([(f"m{i}", i * 0.2, i * 0.2 + 0.12) for i in range(12)])
+    events = _dialogue_events(build_ass(group_words(words, 3), bold_classic))
+
+    assert events == sorted(events, key=lambda event: event["start"])
+    assert all(event["start"] < event["end"] for event in events)
+
+
+def test_non_karaoke_fallback_has_no_group_overlap(bold_classic):
+    words = _words([
+        ("un", 0.00, 0.20),
+        ("deux", 0.22, 0.40),
+        ("trois", 0.38, 0.60),
+    ])
+    groups = group_words(words, max_words_per_line=2, gap_threshold=0.6)
+    events = _dialogue_events(
+        build_ass(groups, bold_classic, karaoke=False, lead_in=0.08, hold=0.30)
+    )
+
+    assert len(events) == 2
+    assert events[0]["end"] <= events[1]["start"]
+    assert all(event["text"].strip() for event in events)
 
 
 def test_all_styles_build_distinct_headers():
