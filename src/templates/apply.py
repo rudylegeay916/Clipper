@@ -91,7 +91,16 @@ def wrap_hook_text(text: str, max_chars_per_line: int = 24, max_lines: int = 2) 
 def _find_font_file() -> Path | None:
     """Premiere police embarquee dans assets/fonts/ (sinon fontconfig)."""
     fonts = sorted(FONTS_DIR.glob("*.[ot]tf"))
-    return fonts[0] if fonts else None
+    if fonts:
+        return fonts[0]
+
+    for candidate in (
+        Path("C:/Windows/Fonts/arial.ttf"),
+        Path("C:/Windows/Fonts/segoeui.ttf"),
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 # ---------------------------------------------------------------------------
