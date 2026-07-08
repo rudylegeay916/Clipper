@@ -91,7 +91,16 @@ def wrap_hook_text(text: str, max_chars_per_line: int = 24, max_lines: int = 2) 
 def _find_font_file() -> Path | None:
     """Premiere police embarquee dans assets/fonts/ (sinon fontconfig)."""
     fonts = sorted(FONTS_DIR.glob("*.[ot]tf"))
-    return fonts[0] if fonts else None
+    if fonts:
+        return fonts[0]
+
+    for candidate in (
+        Path("C:/Windows/Fonts/arial.ttf"),
+        Path("C:/Windows/Fonts/segoeui.ttf"),
+    ):
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -135,6 +144,10 @@ def build_filtergraph(settings: dict, template: dict, duration: float,
             f":x=(w-text_w)/2:y=h*{y_position}"
             f":enable='lt(t,{settings.get('hook_duration', 3.0)})'"
         )
+        # Phase 13.5 : animation courte et discrete (fondu d'entree)
+        fade_in = hook.get("fade_in")
+        if fade_in:
+            drawtext += f":alpha='min(1,t/{fade_in})'"
         font_file = _find_font_file()
         if font_file is not None:
             drawtext += f":fontfile={format_filter_path(font_file)}"
@@ -392,6 +405,21 @@ def apply_templates(source: str, force: bool = False, template_name: str | None 
     subtitled_dir = output_dir / "subtitled"
     final_dir.mkdir(parents=True, exist_ok=True)
 
+    # Phase 13.5 : hooks creatifs selectionnes (si le Creative Engine a tourne)
+    creative_hooks = {}
+    creative_path = output_dir / "creative_manifest.json"
+    if creative_path.is_file():
+        try:
+            creative_clips = json.loads(
+                creative_path.read_text(encoding="utf-8")).get("clips", {})
+            creative_hooks = {
+                int(rank): entry["selected_hook"]["text"]
+                for rank, entry in creative_clips.items()
+                if entry.get("selected_hook")
+            }
+        except (json.JSONDecodeError, KeyError, ValueError):
+            logger.warning("creative_manifest.json illisible : hooks par defaut")
+
     # --- Montage de chaque clip ---
     manifest_clips = []
     for clip in subtitled_clips:
@@ -402,7 +430,8 @@ def apply_templates(source: str, force: bool = False, template_name: str | None 
 
         final_name = clip["subtitled_file"].replace("subtitled_", "final_", 1)
         destination = final_dir / final_name
-        hook_text = clip.get("hook_text") or clip.get("suggested_title")
+        hook_text = (creative_hooks.get(clip["rank"])
+                     or clip.get("hook_text") or clip.get("suggested_title"))
 
         logger.info("Montage #%d (%s) : %s ...", clip["rank"], template_name, final_name)
         if settings.get("enabled", True):

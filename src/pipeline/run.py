@@ -48,6 +48,8 @@ STAGES = [
      "outputs": ["preview.html"]},
     {"id": "transcription", "label": "Transcription",          "essential": True,
      "outputs": ["transcript.json"]},
+    {"id": "creative_routing", "label": "Routage créatif",     "essential": True,
+     "outputs": ["creative_manifest.json"]},
     {"id": "detection",     "label": "Silences / coupes",      "essential": False,
      "outputs": ["analysis.json"]},
     {"id": "scoring",       "label": "Scoring moments forts",  "essential": True,
@@ -56,10 +58,16 @@ STAGES = [
      "outputs": ["clips_manifest.json"]},
     {"id": "reframe",       "label": "Reframe vertical",       "essential": False,
      "outputs": ["vertical_manifest.json"]},
-    {"id": "subtitles",     "label": "Sous-titres karaoke",    "essential": False,
+    {"id": "speech_decision", "label": "Détection de parole",  "essential": False,
+     "outputs": [".creative/speech.done"]},
+    {"id": "subtitles",     "label": "Sous-titres (conditionnels)", "essential": False,
      "outputs": ["subtitles_manifest.json"]},
+    {"id": "creative_hooks", "label": "Hooks créatifs",        "essential": False,
+     "outputs": [".creative/hooks.done"]},
     {"id": "templates",     "label": "Template de montage",    "essential": False,
      "outputs": ["final_manifest.json"]},
+    {"id": "creative_music", "label": "Musique adaptative",    "essential": False,
+     "outputs": [".creative/music.done"]},
     {"id": "metadata",      "label": "Métadonnées de post",    "essential": False,
      "outputs": ["metadata_posts.json"]},
     {"id": "visibility",    "label": "Score de visibilité",    "essential": False,
@@ -100,10 +108,32 @@ def _run_scoring(ctx):
                        top=ctx["options"].get("top"))
 
 
+def _run_creative_routing(ctx):
+    from src.creative.engine import run_creative_routing
+    return run_creative_routing(ctx["metadata_path"], ctx["options"])
+
+
 def _run_cutting(ctx):
-    from src.cutting.cut import cut_clips
-    return cut_clips(str(ctx["metadata_path"]), force=ctx["force"],
-                     top=ctx["options"].get("top"))
+    # Phase 13.5 : decoupage conscient du mode de contenu (preserve_short
+    # ne coupe jamais, preserve_medium garde la version complete,
+    # clipping_long ajoute les clips longs coherents)
+    from src.creative.engine import run_cutting_with_mode
+    return run_cutting_with_mode(ctx["metadata_path"], ctx["options"], ctx["force"])
+
+
+def _run_speech_decision(ctx):
+    from src.creative.engine import run_speech_decision
+    return run_speech_decision(ctx["metadata_path"], ctx["options"])
+
+
+def _run_creative_hooks(ctx):
+    from src.creative.engine import run_creative_hooks
+    return run_creative_hooks(ctx["metadata_path"], ctx["options"])
+
+
+def _run_creative_music(ctx):
+    from src.creative.engine import run_creative_music
+    return run_creative_music(ctx["metadata_path"], ctx["options"])
 
 
 def _run_reframe(ctx):
@@ -115,10 +145,10 @@ def _run_reframe(ctx):
 
 
 def _run_subtitles(ctx):
-    from src.subtitles.burn import burn_subtitles
-    return burn_subtitles(str(ctx["metadata_path"]), force=ctx["force"],
-                          style_name=ctx["options"].get("subtitle_style"),
-                          top=ctx["options"].get("top"))
+    # Phase 13.5 : burn ASS uniquement si de la parole significative existe
+    from src.creative.engine import run_subtitles_conditional
+    return run_subtitles_conditional(ctx["metadata_path"], ctx["options"],
+                                     ctx["force"])
 
 
 def _run_templates(ctx):
@@ -149,10 +179,17 @@ def _run_export(ctx):
 
 RUNNERS = {
     "ingestion": _run_ingestion, "preview": _run_preview,
-    "transcription": _run_transcription, "detection": _run_detection,
+    "transcription": _run_transcription,
+    "creative_routing": _run_creative_routing,
+    "detection": _run_detection,
     "scoring": _run_scoring, "cutting": _run_cutting,
-    "reframe": _run_reframe, "subtitles": _run_subtitles,
-    "templates": _run_templates, "metadata": _run_metadata,
+    "reframe": _run_reframe,
+    "speech_decision": _run_speech_decision,
+    "subtitles": _run_subtitles,
+    "creative_hooks": _run_creative_hooks,
+    "templates": _run_templates,
+    "creative_music": _run_creative_music,
+    "metadata": _run_metadata,
     "visibility": _run_visibility, "export": _run_export,
 }
 
@@ -325,6 +362,16 @@ def run_pipeline(source: str, cli_options: dict | None = None) -> dict:
             logger.info("%s : hors plage from/to", label)
             continue
 
+        # Phase 13.5 : en preserve_short (source < 60s), la video entiere
+        # devient l'unique clip -> detection et scoring sans objet
+        if stage_id in ("detection", "scoring") and output_dir is not None:
+            from src.creative.engine import get_content_mode
+            if get_content_mode(output_dir) == "preserve_short":
+                entry["status"] = "skipped"
+                entry["produced"] = []
+                logger.info("%s : sauté (mode preserve_short, aucun cut)", label)
+                continue
+
         # --- Reprise pipeline : sorties deja presentes ---
         if (resume and output_dir is not None and not must_resolve
                 and _outputs_exist(output_dir, stage)):
@@ -461,7 +508,7 @@ def _dry_run(source: str, options: dict, from_index: int, to_index: int) -> dict
             status = "à exécuter"
         plan.append({"id": stage["id"], "status": status,
                      "outputs": stage["outputs"]})
-        print(f"  [{index + 1:2d}/12] {stage['label']:24s} {status:12s} "
+        print(f"  [{index + 1:2d}/{len(STAGES)}] {stage['label']:26s} {status:12s} "
               f"-> {', '.join(stage['outputs'])}")
     if problems:
         print("\nPrérequis manquants :")
@@ -490,6 +537,19 @@ def main() -> int:
                         choices=["stable", "balanced", "follow"])
     parser.add_argument("--language", default=None,
                         help="auto (defaut) ou code langue (fr, en)")
+    parser.add_argument("--clip-profile", dest="clip_profile", default=None,
+                        choices=["auto", "performance", "monetization", "both"],
+                        help="Profils de duree des clips (Phase 13.5)")
+    parser.add_argument("--subtitles", default=None,
+                        choices=["auto", "always", "never"],
+                        help="auto : sous-titres uniquement si parole significative")
+    parser.add_argument("--music", default=None,
+                        help="auto | none | keep | <track_id de music_library.yaml>")
+    parser.add_argument("--source-rights", dest="source_rights", default=None,
+                        choices=["owned", "licensed", "third-party-authorized",
+                                 "unknown"],
+                        help="Droits declares sur la source (trace, jamais de "
+                             "garantie de monetisation)")
     parser.add_argument("--resume", action="store_true", default=None,
                         help="Saute les etapes dont les sorties existent deja")
     parser.add_argument("--force", action="store_true", default=None,

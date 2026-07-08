@@ -62,10 +62,12 @@ def _called_ids(calls):
 # ---------------------------------------------------------------------------
 
 def test_stage_order_and_registry():
-    """Les 12 etapes, dans l'ordre du produit, toutes avec un runner."""
-    assert STAGE_IDS == ["ingestion", "preview", "transcription", "detection",
-                         "scoring", "cutting", "reframe", "subtitles",
-                         "templates", "metadata", "visibility", "export"]
+    """Les 16 etapes (12 + Creative Engine), dans l'ordre, avec un runner."""
+    assert STAGE_IDS == ["ingestion", "preview", "transcription",
+                         "creative_routing", "detection", "scoring", "cutting",
+                         "reframe", "speech_decision", "subtitles",
+                         "creative_hooks", "templates", "creative_music",
+                         "metadata", "visibility", "export"]
     assert set(pipeline_run.RUNNERS) == set(STAGE_IDS)
 
 
@@ -119,11 +121,11 @@ def test_dry_run_executes_nothing(mocked_runners, capsys):
 
     assert calls == []                                    # Rien execute
     assert result["status"] == "dry_run"
-    assert len(result["plan"]) == 12
+    assert len(result["plan"]) == len(STAGE_IDS)
     preview_plan = next(p for p in result["plan"] if p["id"] == "preview")
     assert preview_plan["status"] == "désactivée"
     output = capsys.readouterr().out
-    assert "DRY RUN" in output and "[12/12]" in output
+    assert "DRY RUN" in output and f"[{len(STAGE_IDS)}/{len(STAGE_IDS)}]" in output
 
 
 def test_resume_skips_existing(mocked_runners):
@@ -160,7 +162,8 @@ def test_from_to_stage(mocked_runners):
                                       "from_stage": "subtitles",
                                       "to_stage": "templates"})
 
-    assert _called_ids(calls) == ["ingestion", "subtitles", "templates"]
+    assert _called_ids(calls) == ["ingestion", "subtitles", "creative_hooks",
+                                  "templates"]
     statuses = {s["id"]: s["status"] for s in manifest["stages"]}
     assert statuses["scoring"] == "skipped"
     assert statuses["export"] == "skipped"

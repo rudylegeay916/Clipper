@@ -1,0 +1,33 @@
+# ============================================================
+# Phase 13.5 - Profils de contenu par plateforme
+# ============================================================
+# Informatif et configurable : rien ne garantit l'eligibilite a
+# un programme de monetisation (monetization_guaranteed: false
+# est toujours ecrit dans les manifests).
+# ============================================================
+
+content_profiles:
+
+  tiktok_performance:
+    platform: tiktok
+    duration_range: [20, 59]
+    priority: retention
+
+  tiktok_creator_rewards_compatible:
+    platform: tiktok
+    min_technical_duration: 61     # Minimum technique du programme
+    duration_range: [65, 90]
+    requires: [coherent_content, originality]
+    note: "Duree conforme ne signifie PAS eligibilite garantie."
+
+  youtube_shorts:
+    platform: shorts
+    max_duration: 180
+    allow_profiles: [performance_short, youtube_shorts_long]
+    added_music_requires_content_id_safe: true
+
+  instagram_reels:
+    platform: reels
+    duration_range: [15, 90]
+    primary_profile: performance_short
+    allow_long_variant: true

@@ -25,6 +25,26 @@ templates:
       rate: 0.0005             # Zoom par frame (0.0005 x 30fps = +1.5%/s)
       max: 1.05                # Zoom maximal (5%)
 
+  # Phase 13.5 : hook creatif anime, zoom quasi nul, jamais de watermark.
+  # Le hook affiche est le selected_hook de creative_manifest.json.
+  creative_social:
+    hook:
+      fontsize_ratio: 0.042
+      y_ratio: 0.12            # Haut, zone sure, hors visage et sous-titres
+      color: white
+      border: 4
+      box: false
+      uppercase: false
+      max_chars_per_line: 22
+      fade_in: 0.35            # Animation courte et discrete (fondu d'entree)
+      highlight_word: true     # Le mot fort du hook en jaune
+    progress_bar:
+      height: 6
+      color: "white@0.6"
+    zoom:
+      rate: 0.0                # Zoom nul : sous-titres jamais agrandis
+      max: 1.0
+
   # Plus punchy : hook massif sur fond, barre visible, zoom marque
   punchy_short:
     hook:
