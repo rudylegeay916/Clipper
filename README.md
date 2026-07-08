@@ -337,6 +337,33 @@ python -m src.utils.make_sample --duration 20
 python -m src.ingestion.ingest samples/sample_20s.mp4
 ```
 
+### Interface locale Streamlit (Phase 14A)
+
+Installation :
+
+```powershell
+pip install -r requirements.txt
+```
+
+Lancement :
+
+```powershell
+streamlit run src/ui/app.py
+```
+
+Dans le navigateur, ouvrez **Otherme Clipper**, importez un fichier vidéo
+(`mp4`, `mov`, `mkv`, `webm`, `avi`) ou collez une URL compatible avec
+l'ingestion existante, choisissez les options simples puis cliquez sur
+**Créer mes clips**. La source uploadée est enregistrée localement dans
+`input/uploads/<job_id>/` et le pipeline tourne en arrière-plan via
+`python -m src.pipeline.run`.
+
+La page affiche la progression du job, les logs techniques dans une zone
+avancée, l'historique **Mes projets**, les lecteurs vidéo, captions, hashtags,
+manifests utiles et le bouton **Télécharger tous les clips en ZIP**. Les
+résultats restent locaux dans `output/<nom_video>/` et les fiches jobs dans
+`output/_jobs/`. Aucune publication automatique, aucun cloud, aucun `.exe`.
+
 ### Lancer les tests
 
 ```powershell
@@ -380,6 +407,16 @@ Le pipeline ne refait jamais un travail déjà fait : si `output/<video>/metadat
 
 Le pipeline fonctionne entièrement en local. Seule la génération de titres/hashtags (Phase 10) peut optionnellement utiliser l'API Claude : copier `.env.example` en `.env` et y renseigner la clé.
 
+## Lancement Windows local
+
+Premiere installation : double-cliquer sur `Installer les dependances.bat`. Le script verifie Python 3.11, cree `.venv` si necessaire, installe `requirements.txt` si Streamlit manque, puis verifie FFmpeg. Il ne telecharge pas Python ni FFmpeg automatiquement ; si un prerequis manque, il affiche les commandes recommandees.
+
+Lancement quotidien : double-cliquer sur `Lancer Otherme Clipper.bat`. L'application demarre avec le Python de `.venv`, utilise le port Streamlit configure dans `.streamlit/config.toml` ou `8501` par defaut, puis ouvre `http://localhost:8501` automatiquement une seule fois. Si l'application tourne deja, aucune deuxieme instance n'est lancee.
+
+Arret : double-cliquer sur `Arreter Otherme Clipper.bat`. Le script utilise `runtime/streamlit.pid` pour arreter uniquement le processus Streamlit lance par Otherme Clipper.
+
+Logs : `logs/app.log`. Etat local : `runtime/streamlit.pid`.
+
 ## Rapport de validation — Phase 7 (reframe vertical)
 
 **Version MediaPipe réellement utilisée : 0.10.21** (`pip freeze` → `mediapipe==0.10.21`, `mp.solutions` présent). Le pin `mediapipe>=0.10,<0.10.30` de `requirements.txt` se résout bien vers 0.10.21 — la version suivante publiée (0.10.30) supprime l'API `solutions` à modèles embarqués. La mention de 0.10.35 dans l'historique correspond à la première installation (non épinglée) qui a justement révélé ce problème.
@@ -418,4 +455,5 @@ Le pipeline fonctionne entièrement en local. Seule la génération de titres/ha
 | 11 | Score de visibilité (8 sous-scores + recommandations) | ✅ Fait |
 | 12 | Export multi-plateforme (dossiers prêts à publier) | ✅ Fait |
 | 13 | Pipeline complet + batch (une commande) | ✅ Fait |
-| 14 | Interface Streamlit | À venir |
+| 13.5 | Creative Engine (routage, hooks, sous-titres conditionnels, musique) | ✅ Fait |
+| 14A | Interface locale Streamlit | ✅ Fait |

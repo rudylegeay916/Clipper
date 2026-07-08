@@ -1,0 +1,25 @@
+ui:
+  title: Otherme Clipper
+  subtitle: Transformez une video longue ou courte en clips prets a publier.
+  upload:
+    max_size_mb: 4096
+    allowed_extensions: [mp4, mov, mkv, webm, avi]
+    min_free_space_multiplier: 2.0
+  refresh_seconds: 5
+  duplicate_guard_seconds: 5
+  defaults:
+    top: 3
+    platform: all
+    clip_profile: auto
+    reframe_method: auto
+    stability: stable
+    subtitles: auto
+    subtitle_style: bold_classic
+    template: creative_social
+    music: auto
+    language: auto
+    resume: true
+    force: false
+    skip_preview: false
+    source_rights: unknown
+
