@@ -1,0 +1,38 @@
+campaigns:
+  default:
+    language: auto
+    tone: auto
+    required_mentions: {}
+    watermark: false
+    added_logos_allowed: false
+    forbidden_hashtags: []
+    on_screen_text:
+      required: false
+      style: auto
+      spammy_text_forbidden: true
+
+  skylar_mae_soccer:
+    language: en
+    tone: funny
+    audience:
+      - US
+      - UK
+      - Canada
+      - Australia
+      - New Zealand
+    watermark: false
+    added_logos_allowed: false
+    required_mentions:
+      tiktok: "@skylarmaexoxoxo"
+      reels: "@officialskylarmaexo"
+      twitter: "@skylarxomae"
+    forbidden_hashtags:
+      - pourtoi
+      - france
+      - tiktokfr
+      - apprendrequestiktok
+    on_screen_text:
+      required: true
+      style: digestible
+      spammy_text_forbidden: true
+

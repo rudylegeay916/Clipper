@@ -31,3 +31,11 @@ models/
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# --- Etat local de l'application ---
+runtime/*
+!runtime/.gitkeep
+runtime/*.pid
+logs/*
+!logs/.gitkeep
+logs/*.log

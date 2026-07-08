@@ -26,4 +26,4 @@ mediapipe>=0.10,<0.10.30
 # --- Phases ulterieures (decommenter au moment voulu) ---
 # scenedetect>=0.6           # Phase 4 (option) : detection de changements de plan
 # anthropic>=0.40            # Phase 10 (option) : generation titres/hashtags via API Claude
-# streamlit>=1.35            # Phase 14 : interface web
+streamlit>=1.35             # Phase 14A : interface locale
