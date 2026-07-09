@@ -417,6 +417,8 @@ Twitch : peut lire les clips publics d'une VOD via Helix si `.env` contient `TWI
 
 Kick : retourne `unsupported` en l'absence de source officielle stable exploitable sans scraping prive.
 
+YouTube Analytics officiel : optionnel pour les videos appartenant a votre chaine. Placez le client OAuth desktop dans `secrets/youtube_client_secret.json`, puis utilisez Parametres -> YouTube Analytics officiel -> Connecter YouTube. Le token local est stocke dans `runtime/youtube_oauth_token.json` et ignore par Git. Le pipeline utilise ce token uniquement s'il existe ; sinon il conserve le fallback heatmap publique yt-dlp.
+
 ## Lancement Windows local
 
 Premiere installation : double-cliquer sur `Installer les dependances.bat`. Le script verifie Python 3.11, cree `.venv` si necessaire, installe `requirements.txt` si Streamlit manque, puis verifie FFmpeg. Il ne telecharge pas Python ni FFmpeg automatiquement ; si un prerequis manque, il affiche les commandes recommandees.

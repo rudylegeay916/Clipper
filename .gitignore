@@ -8,6 +8,10 @@ __pycache__/
 
 # --- Secrets (ne JAMAIS committer les clés API) ---
 .env
+secrets/
+credentials/
+tokens/
+*.client_secret.json
 credentials/*.client_secret.json
 runtime/*token*.json
 runtime/*oauth*.json

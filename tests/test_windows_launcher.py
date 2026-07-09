@@ -216,6 +216,18 @@ def test_streamlit_command_uses_project_venv_and_configured_port(tmp_path):
     assert " " in command[0]
 
 
+def test_streamlit_host_forces_loopback_address_and_never_all_interfaces():
+    script = (PROJECT_ROOT / "scripts" / "streamlit_host.ps1").read_text(encoding="utf-8")
+    config = (PROJECT_ROOT / ".streamlit" / "config.toml").read_text(encoding="utf-8")
+
+    assert "--server.address" in script
+    assert '"127.0.0.1"' in script
+    assert "address = \"127.0.0.1\"" in config
+    assert "port = 8501" in config
+    assert "0.0.0.0" not in script
+    assert "0.0.0.0" not in config
+
+
 def test_pid_read_write_and_remove(tmp_path):
     pid_path = tmp_path / "runtime" / "streamlit.pid"
 
@@ -283,6 +295,36 @@ def test_start_script_refuses_second_instance_without_opening_browser():
 
         assert result.returncode == 0, result.stderr
         assert "Otherme Clipper est pret" in result.stdout
+        assert proc.poll() is None
+        assert pid_path.read_text(encoding="utf-8").strip() == str(proc.pid)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        pid_path.unlink(missing_ok=True)
+
+
+def test_start_script_existing_instance_opens_browser_without_second_instance(tmp_path):
+    port = free_port()
+    proc = start_fake_streamlit_process(port=port)
+    pid_path = PROJECT_ROOT / "runtime" / "streamlit.pid"
+    marker = tmp_path / "browser.txt"
+    pid_path.parent.mkdir(exist_ok=True)
+    pid_path.write_text(str(proc.pid), encoding="utf-8")
+
+    try:
+        time.sleep(0.5)
+        result = run_script(
+            START_SCRIPT,
+            "-BrowserMarkerPath", str(marker),
+            "-StartupTimeoutSeconds", "3",
+            "-PollMilliseconds", "100",
+            timeout=30,
+            env=launcher_env(port),
+        )
+
+        assert result.returncode == 0, result.stderr
+        assert "Otherme Clipper est pret" in result.stdout
+        assert marker.read_text(encoding="utf-8").lstrip("\ufeff").strip() == f"http://localhost:{port}"
         assert proc.poll() is None
         assert pid_path.read_text(encoding="utf-8").strip() == str(proc.pid)
     finally:

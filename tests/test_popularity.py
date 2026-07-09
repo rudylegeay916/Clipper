@@ -13,8 +13,25 @@ from src.popularity.source import (
     run_source_popularity,
 )
 from src.popularity.twitch import fetch_twitch_report
-from src.popularity.youtube_analytics import fetch_youtube_analytics_report
+from src.popularity.youtube_analytics import (
+    build_popularity_report,
+    connect_youtube,
+    connect_youtube_analytics,
+    disconnect_youtube,
+    fetch_retention_points,
+    fetch_youtube_analytics_report,
+    get_authenticated_channel,
+    load_credentials,
+    normalize_retention_points,
+    sanitize_google_error,
+    save_credentials_atomic,
+    verify_video_ownership,
+    youtube_oauth_status,
+)
 from src.popularity.youtube_public import fetch_youtube_public_report
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
 
 
 def test_filter_ytdlp_info_preserves_safe_public_fields():
@@ -220,9 +237,45 @@ def test_twitch_nearby_clips_merge_into_single_hot_zone():
     assert segment.sample_count == 2
 
 
-def test_kick_and_youtube_analytics_return_safe_statuses():
+def test_kick_and_youtube_analytics_return_safe_statuses(tmp_path, monkeypatch):
+    for env_name in (
+        "GOOGLE_APPLICATION_CREDENTIALS",
+        "GOOGLE_CLIENT_SECRETS",
+        "GOOGLE_OAUTH_CLIENT_SECRET",
+        "YOUTUBE_CLIENT_SECRETS_FILE",
+        "YOUTUBE_OAUTH_TOKEN_FILE",
+        "TWITCH_CLIENT_ID",
+        "TWITCH_CLIENT_SECRET",
+    ):
+        monkeypatch.delenv(env_name, raising=False)
+
+    missing_config = {
+        "client_secrets_file": str(tmp_path / "missing" / "youtube_client_secret.json"),
+        "token_file": str(tmp_path / "missing" / "youtube_oauth_token.json"),
+    }
+    forbidden_roots = [
+        (PROJECT_ROOT / "secrets").resolve(),
+        (PROJECT_ROOT / "runtime").resolve(),
+    ]
+
+    def assert_not_real_project_path(path):
+        resolved = Path(path).resolve()
+        assert all(not resolved.is_relative_to(root) for root in forbidden_roots)
+
+    def forbidden_google(*args, **kwargs):
+        raise AssertionError("Google clients must not be built when OAuth files are missing")
+
+    monkeypatch.setattr("src.popularity.youtube_analytics.load_credentials", forbidden_google)
+    monkeypatch.setattr("src.popularity.youtube_analytics.connect_youtube", forbidden_google)
+    monkeypatch.setattr("src.popularity.youtube_analytics.connect_youtube_analytics", forbidden_google)
+    assert_not_real_project_path(missing_config["client_secrets_file"])
+    assert_not_real_project_path(missing_config["token_file"])
+
     kick = fetch_kick_report({"source": {"platform": "kick", "video_id": "k1"}})
-    analytics = fetch_youtube_analytics_report({"source": {"platform": "youtube", "video_id": "y1"}})
+    analytics = fetch_youtube_analytics_report(
+        {"source": {"platform": "youtube", "video_id": "y1"}},
+        missing_config,
+    )
 
     assert kick.status == "unsupported"
     assert kick.available is False
@@ -244,7 +297,12 @@ def test_youtube_public_can_be_disabled_by_config():
 
     report = fetch_source_popularity(
         metadata,
-        config={"enabled": True, "default_mode": "auto", "youtube_public": {"enabled": False}},
+        config={
+            "enabled": True,
+            "default_mode": "auto",
+            "youtube_analytics": {"enabled": False},
+            "youtube_public": {"enabled": False},
+        },
     )
 
     assert report.provider == "disabled"
@@ -398,3 +456,400 @@ def test_run_source_popularity_accepts_windows_style_paths_with_spaces(tmp_path)
 
     assert result.parent == folder
     assert manifest["provider"] == "disabled"
+
+
+def _youtube_config(tmp_path: Path) -> dict:
+    client = tmp_path / "folder with spaces" / "youtube_client_secret.json"
+    token = tmp_path / "runtime with spaces" / "youtube_oauth_token.json"
+    client.parent.mkdir(parents=True)
+    token.parent.mkdir(parents=True)
+    client.write_text("{}", encoding="utf-8")
+    return {
+        "enabled": True,
+        "client_secrets_file": str(client),
+        "token_file": str(token),
+        "confidence_cap": 0.90,
+    }
+
+
+class FakeCredentials:
+    next_credential = None
+
+    def __init__(self, valid=True, expired=False, refresh_token="refresh", refresh_fails=False):
+        self.valid = valid
+        self.expired = expired
+        self.refresh_token = refresh_token
+        self.refresh_fails = refresh_fails
+        self.refreshed = False
+
+    @classmethod
+    def from_authorized_user_file(cls, path, scopes):
+        return cls.next_credential
+
+    def refresh(self, request):
+        if self.refresh_fails:
+            raise RuntimeError("refresh failed access_token=secret")
+        self.valid = True
+        self.expired = False
+        self.refreshed = True
+
+    def to_json(self):
+        return json.dumps({"token": "stored-token", "refresh_token": "stored-refresh"})
+
+
+class FakeRequest:
+    pass
+
+
+def test_youtube_analytics_client_file_absent_and_token_absent(tmp_path):
+    config = {
+        "client_secrets_file": str(tmp_path / "missing_client.json"),
+        "token_file": str(tmp_path / "missing_token.json"),
+    }
+    metadata = {"source": {"platform": "youtube", "video_id": "vid"}}
+
+    assert load_credentials(config, credentials_cls=FakeCredentials, request_factory=FakeRequest) is None
+    report = fetch_youtube_analytics_report(metadata, config)
+
+    assert report.status == "credentials_missing"
+    assert report.available is False
+
+
+def test_youtube_analytics_valid_token_is_loaded(tmp_path):
+    config = _youtube_config(tmp_path)
+    Path(config["token_file"]).write_text("{}", encoding="utf-8")
+    FakeCredentials.next_credential = FakeCredentials(valid=True)
+
+    credential = load_credentials(config, credentials_cls=FakeCredentials, request_factory=FakeRequest)
+
+    assert credential is FakeCredentials.next_credential
+    assert credential.valid is True
+
+
+def test_youtube_analytics_expired_token_refreshes_and_saves_atomically(tmp_path):
+    config = _youtube_config(tmp_path)
+    token_file = Path(config["token_file"])
+    token_file.write_text("{}", encoding="utf-8")
+    FakeCredentials.next_credential = FakeCredentials(valid=False, expired=True)
+
+    credential = load_credentials(config, credentials_cls=FakeCredentials, request_factory=FakeRequest)
+
+    assert credential.refreshed is True
+    assert json.loads(token_file.read_text(encoding="utf-8"))["token"] == "stored-token"
+    assert not token_file.with_suffix(token_file.suffix + ".tmp").exists()
+
+
+def test_youtube_analytics_refresh_failure_returns_no_credentials(tmp_path):
+    config = _youtube_config(tmp_path)
+    Path(config["token_file"]).write_text("{}", encoding="utf-8")
+    FakeCredentials.next_credential = FakeCredentials(valid=False, expired=True, refresh_fails=True)
+
+    assert load_credentials(config, credentials_cls=FakeCredentials, request_factory=FakeRequest) is None
+
+
+def test_youtube_analytics_disconnect_removes_only_token(tmp_path):
+    config = _youtube_config(tmp_path)
+    token_file = Path(config["token_file"])
+    client_file = Path(config["client_secrets_file"])
+    token_file.write_text("{}", encoding="utf-8")
+
+    assert disconnect_youtube(config) is True
+    assert not token_file.exists()
+    assert client_file.exists()
+
+
+def test_youtube_analytics_atomic_save_writes_token_without_temp_leftover(tmp_path):
+    config = _youtube_config(tmp_path)
+    token_file = Path(config["token_file"])
+    credential = FakeCredentials(valid=True)
+
+    saved = save_credentials_atomic(credential, config=config)
+
+    assert saved == token_file
+    assert json.loads(token_file.read_text(encoding="utf-8"))["refresh_token"] == "stored-refresh"
+    assert not token_file.with_suffix(token_file.suffix + ".tmp").exists()
+
+
+class FakeExecute:
+    def __init__(self, payload):
+        self.payload = payload
+
+    def execute(self):
+        return self.payload
+
+
+class FakeYouTubeService:
+    def __init__(self, channel_id="channel-1", video_channel_id="channel-1", channel_title="My Channel"):
+        self.channel_id = channel_id
+        self.video_channel_id = video_channel_id
+        self.channel_title = channel_title
+        self.video_calls = 0
+
+    def channels(self):
+        return self
+
+    def videos(self):
+        return self
+
+    def list(self, **kwargs):
+        if kwargs.get("mine"):
+            return FakeExecute({"items": [{"id": self.channel_id, "snippet": {"title": self.channel_title}}]})
+        self.video_calls += 1
+        return FakeExecute({"items": [{"snippet": {"channelId": self.video_channel_id}}]})
+
+
+class FakeAnalyticsService:
+    def __init__(self, rows):
+        self.rows = rows
+        self.called = False
+        self.kwargs = None
+
+    def reports(self):
+        return self
+
+    def query(self, **kwargs):
+        self.called = True
+        self.kwargs = kwargs
+        return FakeExecute({"rows": self.rows})
+
+
+def test_youtube_analytics_channel_and_video_ownership():
+    youtube = FakeYouTubeService(channel_id="mine", video_channel_id="mine", channel_title="Brand Channel")
+
+    channel = get_authenticated_channel(youtube)
+
+    assert channel == {"id": "mine", "title": "Brand Channel"}
+    assert verify_video_ownership("video-1", youtube, channel["id"]) is True
+
+
+def test_youtube_analytics_video_not_owned_skips_analytics_call(tmp_path):
+    config = _youtube_config(tmp_path)
+    credential = FakeCredentials(valid=True)
+    youtube = FakeYouTubeService(channel_id="mine", video_channel_id="other")
+    analytics = FakeAnalyticsService(rows=[[0.5, 1.2, -0.1]])
+    metadata = {"source": {"platform": "youtube", "video_id": "video-1"}}
+
+    report = fetch_youtube_analytics_report(
+        metadata,
+        config,
+        youtube_service=youtube,
+        analytics_service=analytics,
+        credentials=credential,
+    )
+
+    assert report.status == "unauthorized"
+    assert analytics.called is False
+
+
+def test_youtube_analytics_fetch_retention_points_and_query_shape():
+    analytics = FakeAnalyticsService(rows=[[0.25, 1.2, -0.2], [0.5, 0.8, 0.3]])
+
+    points = fetch_retention_points("video-1", analytics, {"source": {"timestamp": 1_700_000_000}})
+
+    assert points[0]["elapsedVideoTimeRatio"] == 0.25
+    assert points[0]["audienceWatchRatio"] == 1.2
+    assert points[0]["relativeRetentionPerformance"] == -0.2
+    assert analytics.kwargs["ids"] == "channel==MINE"
+    assert analytics.kwargs["filters"] == "video==video-1"
+    assert analytics.kwargs["dimensions"] == "elapsedVideoTimeRatio"
+
+
+def test_youtube_analytics_normalizes_ratios_detects_peaks_drops_and_merges():
+    points = [
+        {"elapsedVideoTimeRatio": 0.00, "audienceWatchRatio": 3.0, "relativeRetentionPerformance": 1.0},
+        {"elapsedVideoTimeRatio": 0.20, "audienceWatchRatio": 0.8, "relativeRetentionPerformance": -0.2},
+        {"elapsedVideoTimeRatio": 0.30, "audienceWatchRatio": 1.8, "relativeRetentionPerformance": 0.7},
+        {"elapsedVideoTimeRatio": 0.32, "audienceWatchRatio": 1.7, "relativeRetentionPerformance": 0.6},
+        {"elapsedVideoTimeRatio": 0.50, "audienceWatchRatio": 0.5, "relativeRetentionPerformance": -0.6},
+        {"elapsedVideoTimeRatio": 0.70, "audienceWatchRatio": 1.5, "relativeRetentionPerformance": 0.4},
+    ]
+
+    segments = normalize_retention_points(points, duration_seconds=100, confidence_cap=0.9)
+
+    assert segments
+    assert all(segment.confidence <= 0.9 for segment in segments)
+    assert all(segment.start_seconds >= 3 for segment in segments)
+    assert any("local official YouTube retention peak" in segment.reasons for segment in segments)
+    assert any("sharp official YouTube retention drop" in segment.reasons for segment in segments)
+    assert any(segment.sample_count > 1 for segment in segments)
+
+
+def test_youtube_analytics_build_report_handles_valid_and_empty_responses():
+    metadata = {"source": {"platform": "youtube", "video_id": "vid"}, "video": {"duration_seconds": 100}}
+    points = [
+        {"elapsedVideoTimeRatio": 0.2, "audienceWatchRatio": 1.4, "relativeRetentionPerformance": 0.4},
+        {"elapsedVideoTimeRatio": 0.4, "audienceWatchRatio": 0.8, "relativeRetentionPerformance": -0.2},
+        {"elapsedVideoTimeRatio": 0.6, "audienceWatchRatio": 1.5, "relativeRetentionPerformance": 0.5},
+    ]
+
+    report = build_popularity_report(metadata, points, {"confidence_cap": 0.9})
+    empty = build_popularity_report(metadata, [], {"confidence_cap": 0.9})
+
+    assert report.provider == "youtube_analytics_official"
+    assert report.status == "available"
+    assert report.available is True
+    assert empty.status == "unavailable"
+
+
+def test_youtube_analytics_fetch_report_available_and_secret_free(tmp_path):
+    config = _youtube_config(tmp_path)
+    credential = FakeCredentials(valid=True)
+    youtube = FakeYouTubeService(channel_id="mine", video_channel_id="mine")
+    analytics = FakeAnalyticsService(rows=[
+        [0.2, 1.4, 0.4],
+        [0.4, 0.8, -0.2],
+        [0.6, 1.5, 0.5],
+    ])
+    metadata = {
+        "source": {"platform": "youtube", "video_id": "video-1", "timestamp": 1_700_000_000},
+        "video": {"duration_seconds": 100},
+    }
+
+    report = fetch_youtube_analytics_report(
+        metadata,
+        config,
+        youtube_service=youtube,
+        analytics_service=analytics,
+        credentials=credential,
+    )
+    payload = json.dumps(report.to_dict())
+
+    assert report.status == "available"
+    assert report.available is True
+    assert "stored-token" not in payload
+    assert "stored-refresh" not in payload
+
+
+def test_youtube_analytics_source_selection_falls_back_to_public_heatmap(monkeypatch):
+    metadata = {
+        "source": {
+            "platform": "youtube",
+            "video_id": "abc",
+            "heatmap": [
+                {"start_time": 10, "end_time": 20, "value": 1},
+                {"start_time": 20, "end_time": 30, "value": 10},
+            ],
+        }
+    }
+
+    def unauthorized(*args, **kwargs):
+        from src.popularity.models import PopularityReport
+
+        return PopularityReport(
+            platform="youtube",
+            source_url=None,
+            video_id="abc",
+            provider="youtube_analytics_official",
+            status="unauthorized",
+            available=False,
+        )
+
+    monkeypatch.setattr("src.popularity.source.fetch_youtube_analytics_report", unauthorized)
+
+    report = fetch_source_popularity(metadata, config={
+        "enabled": True,
+        "default_mode": "auto",
+        "youtube_analytics": {"enabled": True},
+        "youtube_public": {"enabled": True, "peak_threshold": 60, "confidence_cap": 0.65, "merge_gap_seconds": 3},
+    })
+
+    assert report.provider == "yt_dlp_public_heatmap"
+
+
+def test_youtube_analytics_source_selection_falls_back_without_any_data(monkeypatch):
+    metadata = {"source": {"platform": "youtube", "video_id": "abc"}}
+
+    def missing(*args, **kwargs):
+        from src.popularity.models import PopularityReport
+
+        return PopularityReport(
+            platform="youtube",
+            source_url=None,
+            video_id="abc",
+            provider="youtube_analytics_official",
+            status="credentials_missing",
+            available=False,
+        )
+
+    monkeypatch.setattr("src.popularity.source.fetch_youtube_analytics_report", missing)
+
+    report = fetch_source_popularity(metadata, config={
+        "enabled": True,
+        "default_mode": "auto",
+        "youtube_analytics": {"enabled": True},
+        "youtube_public": {"enabled": True},
+    })
+
+    assert report.status == "unavailable"
+    assert report.available is False
+
+
+def test_youtube_analytics_mode_off_makes_no_google_call(monkeypatch):
+    metadata = {"source": {"platform": "youtube", "video_id": "abc"}}
+
+    def forbidden(*args, **kwargs):
+        raise AssertionError("Google should not be called in mode off")
+
+    monkeypatch.setattr("src.popularity.source.fetch_youtube_analytics_report", forbidden)
+
+    report = fetch_source_popularity(metadata, mode="off")
+
+    assert report.provider == "disabled"
+
+
+def test_youtube_analytics_connect_builds_services_with_fake_flow(tmp_path):
+    config = _youtube_config(tmp_path)
+
+    class FakeFlow:
+        @classmethod
+        def from_client_secrets_file(cls, path, scopes):
+            assert path == config["client_secrets_file"]
+            assert scopes
+            return cls()
+
+        def run_local_server(self, host, port, open_browser):
+            assert host == "127.0.0.1"
+            assert port == 0
+            assert open_browser is True
+            return FakeCredentials(valid=True)
+
+    calls = []
+
+    def fake_build(service, version, credentials=None, cache_discovery=False):
+        calls.append((service, version, cache_discovery))
+        return {"service": service}
+
+    youtube = connect_youtube(config, build_func=fake_build, flow_factory=FakeFlow, open_browser=True)
+    analytics = connect_youtube_analytics(config, credentials=FakeCredentials(valid=True), build_func=fake_build)
+
+    assert youtube == {"service": "youtube"}
+    assert analytics == {"service": "youtubeAnalytics"}
+    assert ("youtube", "v3", False) in calls
+    assert ("youtubeAnalytics", "v2", False) in calls
+
+
+def test_youtube_analytics_oauth_statuses_are_ui_safe(tmp_path):
+    missing_config = {
+        "client_secrets_file": str(tmp_path / "missing.json"),
+        "token_file": str(tmp_path / "token.json"),
+    }
+    config = _youtube_config(tmp_path)
+    youtube = FakeYouTubeService(channel_id="mine", video_channel_id="mine", channel_title="Creator Channel")
+
+    assert youtube_oauth_status(missing_config)["status"] == "not_configured"
+    assert youtube_oauth_status(config)["status"] == "not_connected"
+    connected = youtube_oauth_status(config, credentials=FakeCredentials(valid=True), youtube_service=youtube)
+
+    assert connected["status"] == "connected"
+    assert connected["channel"]["title"] == "Creator Channel"
+
+
+def test_youtube_analytics_google_errors_are_sanitized():
+    message = 'bad {"access_token":"ya29.secret","refresh_token":"refresh","client_secret":"client"} Authorization: Bearer abc'
+
+    cleaned = sanitize_google_error(message)
+
+    assert "ya29.secret" not in cleaned
+    assert '"refresh_token":"refresh"' not in cleaned
+    assert '"client_secret":"client"' not in cleaned
+    assert "Bearer abc" not in cleaned

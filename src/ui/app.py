@@ -8,6 +8,13 @@ from pathlib import Path
 
 import streamlit as st
 
+from src.popularity.source import load_source_popularity_config
+from src.popularity.youtube_analytics import (
+    connect_youtube,
+    disconnect_youtube,
+    sanitize_google_error,
+    youtube_oauth_status,
+)
 from src.ui import campaigns, jobs, projects, results
 
 
@@ -405,7 +412,38 @@ def page_settings() -> None:
         "configure" if os.environ.get("TWITCH_CLIENT_ID") and os.environ.get("TWITCH_CLIENT_SECRET")
         else "non configure",
     )
-    st.write("YouTube Analytics : non configure (connecteur OAuth non active en Phase 15A)")
+    st.markdown("### YouTube Analytics officiel")
+    source_popularity_config = load_source_popularity_config()
+    youtube_config = source_popularity_config.get("youtube_analytics", {})
+    oauth_state = youtube_oauth_status(youtube_config)
+    st.write("Etat :", oauth_state["label"])
+    channel = oauth_state.get("channel")
+    if channel and channel.get("title"):
+        st.write("Chaine connectee :", channel["title"])
+    col_connect, col_reconnect, col_disconnect = st.columns(3)
+    if col_connect.button("Connecter YouTube"):
+        try:
+            connect_youtube(youtube_config, open_browser=True)
+            st.success("YouTube est connecte.")
+            st.rerun()
+        except Exception as error:
+            st.error(sanitize_google_error(error))
+            st.info("Si le navigateur ne s'ouvre pas, relancez depuis cette page apres avoir verifie le fichier OAuth local.")
+    if col_reconnect.button("Reconnecter"):
+        try:
+            connect_youtube(youtube_config, open_browser=True)
+            st.success("YouTube est reconnecte.")
+            st.rerun()
+        except Exception as error:
+            st.error(sanitize_google_error(error))
+    confirm_disconnect = st.checkbox("Confirmer la deconnexion YouTube")
+    if col_disconnect.button("Deconnecter", disabled=not confirm_disconnect):
+        removed = disconnect_youtube(youtube_config)
+        if removed:
+            st.success("Token YouTube supprime.")
+        else:
+            st.info("Aucun token YouTube local a supprimer.")
+        st.rerun()
     st.write("Kick popularity : unsupported sans scraping prive")
     st.json(jobs.load_ui_config())
 

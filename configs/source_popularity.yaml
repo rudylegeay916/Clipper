@@ -24,6 +24,13 @@ source_popularity:
     peak_threshold: 60
     merge_gap_seconds: 3
 
+  youtube_analytics:
+    enabled: true
+    client_secrets_file: secrets/youtube_client_secret.json
+    token_file: runtime/youtube_oauth_token.json
+    confidence_cap: 0.90
+    request_timeout_seconds: 15
+
   twitch:
     enabled: true
     timeout_seconds: 10

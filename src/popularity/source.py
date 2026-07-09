@@ -12,6 +12,7 @@ from src.popularity.kick import fetch_kick_report
 from src.popularity.models import PopularityReport
 from src.popularity.normalize import is_cache_fresh
 from src.popularity.twitch import fetch_twitch_report
+from src.popularity.youtube_analytics import fetch_youtube_analytics_report
 from src.popularity.youtube_public import fetch_youtube_public_report
 from src.utils.config import PROJECT_ROOT
 
@@ -64,9 +65,22 @@ def fetch_source_popularity(metadata: dict[str, Any], config: dict[str, Any] | N
     if mode == "off" or not config.get("enabled", True):
         return _disabled_report(metadata, platform, mode)
     if platform == "youtube":
+        analytics_report = None
+        if config.get("youtube_analytics", {}).get("enabled", True):
+            analytics_report = fetch_youtube_analytics_report(
+                metadata,
+                config.get("youtube_analytics", {}),
+            )
+            if analytics_report.available and analytics_report.status == "available":
+                return analytics_report
         if not config.get("youtube_public", {}).get("enabled", True):
-            return _disabled_report(metadata, platform, "youtube_public_disabled")
-        return fetch_youtube_public_report(metadata, config.get("youtube_public", {}))
+            return analytics_report or _disabled_report(metadata, platform, "youtube_public_disabled")
+        public_report = fetch_youtube_public_report(metadata, config.get("youtube_public", {}))
+        if public_report.available or analytics_report is None:
+            return public_report
+        if analytics_report.status in {"unauthorized", "credentials_missing", "unavailable", "failed"}:
+            return public_report
+        return analytics_report
     if platform == "twitch":
         if not config.get("twitch", {}).get("enabled", True):
             return _disabled_report(metadata, platform, "twitch_disabled")

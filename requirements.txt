@@ -13,6 +13,9 @@ pyyaml>=6.0                  # Lecture des fichiers de config
 rich>=13.0                   # Affichage CLI lisible : couleurs, barres de progression
 pydantic>=2.0                # Validation des configs et des donnees entre modules
 python-dotenv>=1.0           # Chargement du fichier .env (cles API optionnelles)
+google-api-python-client>=2.130,<3.0
+google-auth-oauthlib>=1.2,<2.0
+google-auth-httplib2>=0.2,<1.0
 
 # --- Tests ---
 pytest>=8.0
