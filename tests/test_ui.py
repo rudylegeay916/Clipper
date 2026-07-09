@@ -205,6 +205,18 @@ def test_load_ui_and_campaign_configs():
     assert loaded["default"]["required_mentions"] == {}
 
 
+def test_youtube_analytics_settings_buttons_and_secret_safety_text_are_present():
+    app_source = (jobs.PROJECT_ROOT / "src" / "ui" / "app.py").read_text(encoding="utf-8")
+
+    assert "Connecter YouTube" in app_source
+    assert "Reconnecter" in app_source
+    assert "Deconnecter" in app_source
+    assert "Confirmer la deconnexion YouTube" in app_source
+    assert "client_secret" not in app_source
+    assert "access_token" not in app_source
+    assert "refresh_token" not in app_source
+
+
 def test_campaign_mentions_forbidden_hashtags_no_logo_and_twitter_caption():
     post = {
         "rank": 1,

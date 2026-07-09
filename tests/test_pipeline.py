@@ -222,6 +222,7 @@ def test_hook_rerender_does_not_run_source_popularity_or_adapters(mocked_runners
 
     monkeypatch.setattr("src.popularity.youtube_public.fetch_youtube_public_report", forbidden_adapter)
     monkeypatch.setattr("src.popularity.twitch.fetch_twitch_report", forbidden_adapter)
+    monkeypatch.setattr("src.popularity.youtube_analytics.fetch_youtube_analytics_report", forbidden_adapter)
     pipeline_run.RUNNERS["source_popularity"] = forbidden_adapter
 
     run_pipeline(
