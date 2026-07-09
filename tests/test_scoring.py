@@ -13,6 +13,7 @@ import numpy as np
 import pytest
 
 from src.scoring.score import (
+    apply_source_popularity_bonus,
     build_candidate_windows,
     load_rms_profile,
     load_scoring_config,
@@ -172,3 +173,250 @@ def test_select_top_candidates_max_clips():
     ]
     selected = select_top_candidates(candidates, max_clips=5, max_overlap=0.25, min_score=40)
     assert len(selected) == 5
+
+
+def test_source_popularity_bonus_is_bounded_and_additive():
+    manifest = {
+        "available": True,
+        "provider": "yt_dlp_public_heatmap",
+        "status": "experimental",
+        "mode": "balanced",
+        "segments": [{
+            "start_seconds": 10,
+            "end_seconds": 40,
+            "score": 90,
+            "confidence": 0.5,
+            "reasons": ["hot zone"],
+        }],
+    }
+    config = {
+        "default_mode": "balanced",
+        "scoring": {
+            "minimum_editorial_score": 55,
+            "minimum_structure_score": 40,
+            "minimum_hook_score": 35,
+            "minimum_confidence": 0.15,
+        },
+        "modes": {"balanced": {"max_boost_points": 10}},
+    }
+
+    result = apply_source_popularity_bonus(
+        70,
+        12,
+        30,
+        {"text": 80, "audio": 60, "structure": 65, "hook": 70},
+        manifest,
+        popularity_config=config,
+    )
+
+    assert result["editorial_score"] == 70
+    assert result["final_score"] > 70
+    assert result["popularity_bonus"] <= 10
+    assert result["popularity_applied"] is True
+
+
+def test_source_popularity_cannot_rescue_weak_editorial_candidate():
+    manifest = {
+        "available": True,
+        "provider": "twitch_helix_clips",
+        "status": "available",
+        "mode": "popular",
+        "segments": [{
+            "start_seconds": 0,
+            "end_seconds": 90,
+            "score": 100,
+            "confidence": 1.0,
+        }],
+    }
+    config = {
+        "default_mode": "popular",
+        "scoring": {
+            "minimum_editorial_score": 55,
+            "minimum_structure_score": 40,
+            "minimum_hook_score": 35,
+            "minimum_confidence": 0.15,
+        },
+        "modes": {"popular": {"max_boost_points": 15}},
+    }
+
+    result = apply_source_popularity_bonus(
+        30,
+        10,
+        30,
+        {"text": 20, "audio": 80, "structure": 70, "hook": 70},
+        manifest,
+        popularity_config=config,
+    )
+
+    assert result["final_score"] == 30
+    assert result["popularity_applied"] is False
+    assert "editorial score below popularity guardrail" in result["popularity_reasons"]
+
+
+def _popularity_manifest(score=100, confidence=1.0, available=True, mode="balanced"):
+    return {
+        "available": available,
+        "provider": "yt_dlp_public_heatmap",
+        "status": "experimental" if available else "unavailable",
+        "mode": mode,
+        "segments": [{
+            "start_seconds": 10,
+            "end_seconds": 40,
+            "score": score,
+            "confidence": confidence,
+            "reasons": ["hot zone"],
+        }],
+    }
+
+
+def _popularity_config():
+    return {
+        "default_mode": "balanced",
+        "scoring": {
+            "minimum_editorial_score": 55,
+            "minimum_structure_score": 40,
+            "minimum_hook_score": 35,
+            "minimum_confidence": 0.15,
+        },
+        "modes": {
+            "balanced": {"max_boost_points": 10},
+            "popular": {"max_boost_points": 15},
+            "original": {"max_boost_points": 6, "already_popular_penalty_cap": 4},
+        },
+    }
+
+
+def _strong_family_scores(structure=70, hook=70):
+    return {"text": 80, "audio": 70, "structure": structure, "hook": hook}
+
+
+@pytest.mark.parametrize("manifest, mode", [
+    ({}, "balanced"),
+    (_popularity_manifest(available=False), "balanced"),
+    (_popularity_manifest(), "off"),
+])
+def test_source_popularity_leaves_score_strictly_unchanged_without_data_or_off(manifest, mode):
+    result = apply_source_popularity_bonus(
+        72.5,
+        12,
+        30,
+        _strong_family_scores(),
+        manifest,
+        mode=mode,
+        popularity_config=_popularity_config(),
+    )
+
+    assert result["popularity_bonus"] == 0.0
+    assert result["final_score"] == 72.5
+
+
+@pytest.mark.parametrize("mode,max_boost", [("balanced", 10), ("popular", 15)])
+def test_source_popularity_bonus_respects_configured_mode_cap(mode, max_boost):
+    result = apply_source_popularity_bonus(
+        95,
+        12,
+        30,
+        _strong_family_scores(),
+        _popularity_manifest(score=100, confidence=1.0, mode=mode),
+        mode=mode,
+        popularity_config=_popularity_config(),
+    )
+
+    assert result["popularity_bonus"] <= max_boost
+    assert result["final_score"] <= 100
+
+
+def test_source_popularity_confidence_scales_the_bonus():
+    high = apply_source_popularity_bonus(
+        70,
+        12,
+        30,
+        _strong_family_scores(),
+        _popularity_manifest(score=80, confidence=1.0),
+        popularity_config=_popularity_config(),
+    )
+    low = apply_source_popularity_bonus(
+        70,
+        12,
+        30,
+        _strong_family_scores(),
+        _popularity_manifest(score=80, confidence=0.25),
+        popularity_config=_popularity_config(),
+    )
+
+    assert high["popularity_bonus"] > low["popularity_bonus"]
+    assert low["popularity_bonus"] == pytest.approx(high["popularity_bonus"] * 0.25, abs=0.1)
+
+
+@pytest.mark.parametrize("editorial,structure,hook,reason", [
+    (50, 70, 70, "editorial score below popularity guardrail"),
+    (70, 20, 70, "structure score below popularity guardrail"),
+    (70, 70, 20, "hook score below popularity guardrail"),
+])
+def test_source_popularity_guardrails_block_bonus(editorial, structure, hook, reason):
+    result = apply_source_popularity_bonus(
+        editorial,
+        12,
+        30,
+        _strong_family_scores(structure=structure, hook=hook),
+        _popularity_manifest(score=100, confidence=1.0),
+        mode="popular",
+        popularity_config=_popularity_config(),
+    )
+
+    assert result["popularity_bonus"] == 0.0
+    assert result["final_score"] == editorial
+    assert reason in result["popularity_reasons"]
+
+
+@pytest.mark.parametrize("mode,expected_cap", [
+    ("balanced", 10),
+    ("popular", 15),
+])
+def test_source_popularity_balanced_and_popular_modes_apply_their_caps(mode, expected_cap):
+    result = apply_source_popularity_bonus(
+        70,
+        12,
+        30,
+        _strong_family_scores(),
+        _popularity_manifest(score=100, confidence=1.0, mode=mode),
+        mode=mode,
+        popularity_config=_popularity_config(),
+    )
+
+    assert result["popularity_mode"] == mode
+    assert result["popularity_bonus"] == expected_cap
+    assert result["final_score"] == 70 + expected_cap
+
+
+def test_source_popularity_original_mode_is_limited_and_explained():
+    result = apply_source_popularity_bonus(
+        70,
+        12,
+        30,
+        _strong_family_scores(),
+        _popularity_manifest(score=90, confidence=1.0, mode="original"),
+        mode="original",
+        popularity_config=_popularity_config(),
+    )
+
+    assert result["popularity_mode"] == "original"
+    assert abs(result["popularity_bonus"]) <= 6
+    assert result["final_score"] >= 66
+    assert result["popularity_reasons"]
+
+
+def test_source_popularity_off_mode_disables_bonus_even_with_hot_signal():
+    result = apply_source_popularity_bonus(
+        70,
+        12,
+        30,
+        _strong_family_scores(),
+        _popularity_manifest(score=100, confidence=1.0),
+        mode="off",
+        popularity_config=_popularity_config(),
+    )
+
+    assert result["popularity_mode"] == "off"
+    assert result["popularity_bonus"] == 0.0
+    assert result["final_score"] == 70

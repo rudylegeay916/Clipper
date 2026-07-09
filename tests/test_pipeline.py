@@ -11,6 +11,7 @@ Lancement :
 """
 
 import json
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -62,9 +63,10 @@ def _called_ids(calls):
 # ---------------------------------------------------------------------------
 
 def test_stage_order_and_registry():
-    """Les 16 etapes (12 + Creative Engine), dans l'ordre, avec un runner."""
+    """Les 17 etapes (12 + Creative Engine + popularite source), dans l'ordre."""
     assert STAGE_IDS == ["ingestion", "preview", "transcription",
-                         "creative_routing", "detection", "scoring", "cutting",
+                         "creative_routing", "detection", "source_popularity",
+                         "scoring", "cutting",
                          "reframe", "speech_decision", "subtitles",
                          "creative_hooks", "templates", "creative_music",
                          "metadata", "visibility", "export"]
@@ -103,7 +105,7 @@ def test_options_forwarded(mocked_runners):
                            "subtitle_style": "pop_highlight",
                            "template": "punchy_short",
                            "reframe_method": "center", "stability": "follow",
-                           "language": "fr"})
+                           "language": "fr", "popularity_mode": "popular"})
     options = dict(calls[0][1])
     assert options["top"] == 3
     assert options["platform"] == "all"
@@ -112,6 +114,7 @@ def test_options_forwarded(mocked_runners):
     assert options["reframe_method"] == "center"
     assert options["stability"] == "follow"
     assert options["language"] == "fr"
+    assert options["popularity_mode"] == "popular"
 
 
 def test_dry_run_executes_nothing(mocked_runners, capsys):
@@ -197,6 +200,112 @@ def test_rerender_from_metadata_starts_at_templates_for_single_rank(mocked_runne
     assert statuses["transcription"] == "skipped"
     assert statuses["cutting"] == "skipped"
     assert statuses["subtitles"] == "skipped"
+
+
+def test_hook_rerender_does_not_run_source_popularity_or_adapters(mocked_runners, monkeypatch):
+    calls, output_dir = mocked_runners
+    metadata_path = output_dir / "metadata.json"
+    metadata_path.write_text("{}", encoding="utf-8")
+    popularity_path = output_dir / "source_popularity_manifest.json"
+    original_manifest = json.dumps({
+        "provider": "cached",
+        "status": "available",
+        "available": True,
+        "mode": "auto",
+        "segments": [],
+        "fetched_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+    })
+    popularity_path.write_text(original_manifest, encoding="utf-8")
+
+    def forbidden_adapter(*args, **kwargs):
+        raise AssertionError("source popularity adapter must not run during hook rerender")
+
+    monkeypatch.setattr("src.popularity.youtube_public.fetch_youtube_public_report", forbidden_adapter)
+    monkeypatch.setattr("src.popularity.twitch.fetch_twitch_report", forbidden_adapter)
+    pipeline_run.RUNNERS["source_popularity"] = forbidden_adapter
+
+    run_pipeline(
+        str(metadata_path),
+        {
+            "resume": True,
+            "force": True,
+            "from_stage": "templates",
+            "to_stage": "export",
+            "rank": 2,
+        },
+    )
+
+    assert "source_popularity" not in _called_ids(calls)
+    assert popularity_path.read_text(encoding="utf-8") == original_manifest
+
+
+def _write_popularity_cache(output_dir: Path, fetched_at: str) -> Path:
+    manifest_path = output_dir / "source_popularity_manifest.json"
+    manifest_path.write_text(
+        json.dumps({
+            "provider": "cached",
+            "status": "available",
+            "available": True,
+            "mode": "auto",
+            "segments": [],
+            "fetched_at": fetched_at,
+        }),
+        encoding="utf-8",
+    )
+    return manifest_path
+
+
+def test_pipeline_resume_reuses_fresh_source_popularity_cache(tmp_path, monkeypatch):
+    output_dir = tmp_path / "output" / "project"
+    output_dir.mkdir(parents=True)
+    metadata_path = output_dir / "metadata.json"
+    metadata_path.write_text("{}", encoding="utf-8")
+    _write_popularity_cache(output_dir, datetime.now(timezone.utc).isoformat(timespec="seconds"))
+
+    def forbidden_runner(ctx):
+        raise AssertionError("fresh source popularity cache should be resumed")
+
+    monkeypatch.setattr(pipeline_run, "RUNNERS", {
+        **pipeline_run.RUNNERS,
+        "source_popularity": forbidden_runner,
+    })
+
+    manifest = run_pipeline(
+        str(metadata_path),
+        {"resume": True, "from_stage": "source_popularity", "to_stage": "source_popularity"},
+    )
+
+    entry = next(stage for stage in manifest["stages"] if stage["id"] == "source_popularity")
+    assert entry["status"] == "resumed"
+
+
+def test_pipeline_resume_refreshes_expired_source_popularity_cache(tmp_path, monkeypatch):
+    output_dir = tmp_path / "output" / "project"
+    output_dir.mkdir(parents=True)
+    metadata_path = output_dir / "metadata.json"
+    metadata_path.write_text("{}", encoding="utf-8")
+    old = (datetime.now(timezone.utc) - timedelta(hours=72)).isoformat(timespec="seconds")
+    _write_popularity_cache(output_dir, old)
+    calls = []
+
+    def source_popularity_runner(ctx):
+        calls.append(ctx["metadata_path"])
+        _write_popularity_cache(output_dir, datetime.now(timezone.utc).isoformat(timespec="seconds"))
+        return output_dir / "source_popularity_manifest.json"
+
+    monkeypatch.setattr(pipeline_run, "RUNNERS", {
+        **pipeline_run.RUNNERS,
+        "source_popularity": source_popularity_runner,
+    })
+
+    manifest = run_pipeline(
+        str(metadata_path),
+        {"resume": True, "from_stage": "source_popularity", "to_stage": "source_popularity"},
+    )
+
+    entry = next(stage for stage in manifest["stages"] if stage["id"] == "source_popularity")
+    assert entry["status"] == "done"
+    assert calls == [metadata_path]
 
 
 def test_essential_failure_stops(mocked_runners):

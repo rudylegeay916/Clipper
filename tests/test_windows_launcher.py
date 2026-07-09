@@ -164,13 +164,23 @@ def launcher_env(port: int) -> dict[str, str]:
 def cleanup_pid_process(pid_path: Path):
     if not pid_path.exists():
         return
-    raw = pid_path.read_text(encoding="utf-8").strip()
+    raw = pid_path.read_text(encoding="utf-8").lstrip("\ufeff").strip()
     if raw.isdigit():
         subprocess.run(
             ["taskkill", "/PID", raw, "/F"],
             capture_output=True,
             text=True,
         )
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            result = subprocess.run(
+                ["tasklist", "/FI", f"PID eq {raw}", "/FO", "CSV", "/NH"],
+                capture_output=True,
+                text=True,
+            )
+            if raw not in result.stdout:
+                break
+            time.sleep(0.05)
     pid_path.unlink(missing_ok=True)
 
 

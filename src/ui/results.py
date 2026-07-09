@@ -45,6 +45,8 @@ def load_project_manifests(output_dir: Path) -> dict:
     return {
         "metadata": load_json(output_dir / "metadata.json"),
         "pipeline": load_json(output_dir / "pipeline_manifest.json"),
+        "source_popularity": load_json(output_dir / "source_popularity_manifest.json"),
+        "candidates": load_json(output_dir / "candidates.json"),
         "creative": load_json(output_dir / "creative_manifest.json"),
         "final": load_json(output_dir / "final_manifest.json"),
         "posts": load_json(output_dir / "campaign_results.json")
@@ -58,6 +60,32 @@ def _by_rank(items: list[dict]) -> dict[int, dict]:
     return {int(item["rank"]): item for item in items if "rank" in item}
 
 
+def _popularity_badge(source_popularity: dict, candidate: dict) -> tuple[str | None, str | None]:
+    status = source_popularity.get("status")
+    provider = source_popularity.get("provider")
+    if not status and not provider:
+        return (
+            "Selection editoriale",
+            "Aucun signal externe de popularite n'a ete applique a ce clip.",
+        )
+    if candidate.get("popularity_applied"):
+        badge = (
+            f"Indice popularite source : +{candidate.get('popularity_bonus')} "
+            f"({candidate.get('source_popularity_score')}/100)"
+        )
+        explanation = (
+            f"Provider {candidate.get('popularity_provider') or provider}, "
+            f"confiance {candidate.get('popularity_confidence', 0)}. "
+            "Ce signal complete le scoring editorial sans garantir la performance."
+        )
+        return badge, explanation
+    badge = f"Popularite source : {status or 'unavailable'}"
+    if provider:
+        badge += f" ({provider})"
+    explanation = "Aucun bonus applique a ce clip." if status else None
+    return badge, explanation
+
+
 def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[dict]:
     manifests = load_project_manifests(output_dir)
     final_clips = manifests["final"].get("clips", [])
@@ -66,6 +94,7 @@ def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[
         posts = apply_campaign_to_posts(posts, campaign_profile)
     posts_by_rank = _by_rank(posts)
     visibility_by_rank = _by_rank(manifests["visibility"].get("clips", []))
+    candidates_by_rank = _by_rank(manifests["candidates"].get("candidates", []))
     creative_clips = manifests["creative"].get("clips", {})
     exports = manifests["exports"].get("exports", [])
 
@@ -75,6 +104,11 @@ def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[
         post = posts_by_rank.get(rank, {})
         creative = creative_clips.get(str(rank), {})
         visibility = visibility_by_rank.get(rank, {})
+        candidate = candidates_by_rank.get(rank, {})
+        popularity_badge, popularity_explanation = _popularity_badge(
+            manifests["source_popularity"],
+            candidate,
+        )
         clip_exports = [e for e in exports if int(e.get("rank", 0)) == rank]
         results.append({
             "rank": rank,
@@ -84,6 +118,14 @@ def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[
             "profile": creative.get("clip_profile") or clip.get("platform_fit") or "auto",
             "creative_score": creative.get("creative_score"),
             "visibility_score": visibility.get("visibility_score"),
+            "source_popularity_score": candidate.get("source_popularity_score"),
+            "popularity_bonus": candidate.get("popularity_bonus"),
+            "popularity_provider": candidate.get("popularity_provider")
+                                   or manifests["source_popularity"].get("provider"),
+            "popularity_status": candidate.get("popularity_status")
+                                 or manifests["source_popularity"].get("status"),
+            "popularity_badge": popularity_badge,
+            "popularity_explanation": popularity_explanation,
             "recommended_platform": visibility.get("recommended_platform")
                                     or post.get("platform_fit")
                                     or clip.get("platform_fit"),

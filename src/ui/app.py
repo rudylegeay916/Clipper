@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+import os
 from pathlib import Path
 
 import streamlit as st
@@ -86,6 +87,18 @@ def _options_form(ui_config: dict) -> tuple[dict, str]:
         defaults["template"] = st.selectbox(
             "template", ["creative_social", "clean_social", "punchy_short"])
         defaults["music"] = _music_selector(defaults["music"])
+        popularity_labels = jobs.POPULARITY_MODE_LABELS
+        current_popularity = defaults.get("popularity_mode", "auto")
+        popularity_index = list(popularity_labels.values()).index(
+            current_popularity if current_popularity in popularity_labels.values() else "auto"
+        )
+        popularity_label = st.selectbox(
+            "Signaux de popularite de la source",
+            list(popularity_labels.keys()),
+            index=popularity_index,
+            help="Complete le scoring editorial avec des donnees publiques ou optionnelles, sans garantie de viralite.",
+        )
+        defaults["popularity_mode"] = jobs.popularity_mode_from_label(popularity_label)
         defaults["source_rights"] = st.selectbox(
             "source-rights",
             ["unknown", "owned", "licensed", "third-party-authorized"],
@@ -272,6 +285,10 @@ def render_results(job: dict) -> None:
                 st.write(f"Profil : {clip.get('profile')}")
                 st.write(f"Score creatif : {clip.get('creative_score', '-')}")
                 st.write(f"Score de visibilite : {clip.get('visibility_score', '-')}")
+                if clip.get("popularity_badge"):
+                    st.caption(clip["popularity_badge"])
+                    if clip.get("popularity_explanation"):
+                        st.write(clip["popularity_explanation"])
                 st.write(f"Plateforme recommandee : {clip.get('recommended_platform', '-')}")
                 st.info(clip["disclaimer"])
                 _hook_editor(job, output_dir, clip)
@@ -383,6 +400,13 @@ def page_settings() -> None:
     st.write("FFmpeg :", shutil.which("ffmpeg") or "introuvable")
     st.write("Dossier jobs :", jobs.JOBS_DIR)
     st.write("Dossier uploads :", jobs.UPLOADS_DIR)
+    st.write(
+        "Twitch Helix :",
+        "configure" if os.environ.get("TWITCH_CLIENT_ID") and os.environ.get("TWITCH_CLIENT_SECRET")
+        else "non configure",
+    )
+    st.write("YouTube Analytics : non configure (connecteur OAuth non active en Phase 15A)")
+    st.write("Kick popularity : unsupported sans scraping prive")
     st.json(jobs.load_ui_config())
 
 

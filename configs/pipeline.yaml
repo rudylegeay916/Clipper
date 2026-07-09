@@ -13,6 +13,7 @@ pipeline:
     preview: true
     transcription: true
     detection: true
+    source_popularity: true
     scoring: true
     cutting: true
     reframe: true
@@ -31,6 +32,7 @@ pipeline:
     reframe_method: auto      # auto | face | center
     stability: null           # null = config.yaml vertical.stability
     language: null            # null = detection automatique
+    popularity_mode: auto     # off | auto | balanced | popular | original
 
   behavior:
     resume: true              # Sauter les etapes dont les sorties existent deja

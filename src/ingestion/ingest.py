@@ -61,7 +61,87 @@ def is_url(source: str) -> bool:
 # Telechargement via yt-dlp (optionnel : uniquement pour les URL)
 # ---------------------------------------------------------------------------
 
-def download_video(url: str) -> Path:
+def _clean_timeline_entries(entries: list | None, max_entries: int = 500) -> list[dict]:
+    """Keep only safe numeric/title fields from yt-dlp timeline-like entries."""
+    cleaned = []
+    for entry in entries or []:
+        if not isinstance(entry, dict):
+            continue
+        item = {}
+        for source_key, target_key in (
+            ("start_time", "start_time"),
+            ("end_time", "end_time"),
+            ("start", "start_time"),
+            ("end", "end_time"),
+        ):
+            if source_key in entry and target_key not in item:
+                try:
+                    item[target_key] = round(float(entry[source_key]), 3)
+                except (TypeError, ValueError):
+                    pass
+        if "value" in entry:
+            try:
+                item["value"] = float(entry["value"])
+            except (TypeError, ValueError):
+                pass
+        if "heatMarkerIntensityScoreNormalized" in entry and "value" not in item:
+            try:
+                item["value"] = float(entry["heatMarkerIntensityScoreNormalized"])
+            except (TypeError, ValueError):
+                pass
+        if entry.get("title"):
+            item["title"] = str(entry["title"])[:200]
+        if item:
+            cleaned.append(item)
+        if len(cleaned) >= max_entries:
+            break
+    return cleaned
+
+
+def filter_ytdlp_info(info: dict | None) -> dict:
+    """Whitelist yt-dlp metadata useful to downstream source popularity."""
+    if not isinstance(info, dict):
+        return {}
+
+    extractor = info.get("extractor") or info.get("extractor_key")
+    webpage_url = info.get("webpage_url") or info.get("original_url")
+    cleaned = {
+        "extractor": extractor,
+        "extractor_key": info.get("extractor_key"),
+        "webpage_url": webpage_url,
+        "video_id": info.get("id") or info.get("video_id"),
+        "channel_id": info.get("channel_id"),
+        "uploader_id": info.get("uploader_id"),
+        "uploader": info.get("uploader") or info.get("channel"),
+        "duration": info.get("duration"),
+        "timestamp": info.get("timestamp"),
+        "release_timestamp": info.get("release_timestamp"),
+        "live_status": info.get("live_status"),
+    }
+
+    text = f"{extractor or ''} {webpage_url or ''}".lower()
+    if "youtube" in text or "youtu.be" in text:
+        cleaned["platform"] = "youtube"
+    elif "twitch" in text:
+        cleaned["platform"] = "twitch"
+        cleaned["twitch_video_id"] = cleaned["video_id"]
+        cleaned["twitch_broadcaster_id"] = (
+            info.get("channel_id") or info.get("uploader_id") or info.get("creator_id")
+        )
+    elif "kick" in text:
+        cleaned["platform"] = "kick"
+
+    chapters = _clean_timeline_entries(info.get("chapters"), max_entries=200)
+    if chapters:
+        cleaned["chapters"] = chapters
+    heatmap = _clean_timeline_entries(info.get("heatmap"), max_entries=500)
+    if heatmap:
+        cleaned["heatmap"] = heatmap
+
+    return {key: value for key, value in cleaned.items() if value is not None}
+
+
+def download_video(url: str, return_info: bool = False) -> Path | tuple[Path, dict]:
     """
     Telecharge une video depuis une URL (YouTube, Twitch VOD, ...)
     dans input/ via yt-dlp, et retourne le chemin du fichier obtenu.
@@ -114,14 +194,16 @@ def download_video(url: str) -> Path:
         raise RuntimeError(f"Telechargement termine mais fichier introuvable : {file_path}")
 
     logger.info("Video telechargee : %s", file_path.name)
-    return file_path
+    filtered_info = filter_ytdlp_info(info)
+    return (file_path, filtered_info) if return_info else file_path
 
 
 # ---------------------------------------------------------------------------
 # Extraction des metadonnees (ffprobe, sans chargement en memoire)
 # ---------------------------------------------------------------------------
 
-def extract_metadata(video_path: Path, source: str, source_type: str) -> dict:
+def extract_metadata(video_path: Path, source: str, source_type: str,
+                     source_metadata: dict | None = None) -> dict:
     """
     Lit les en-tetes du fichier avec ffprobe et construit le dictionnaire
     de metadonnees du pipeline. Quasi instantane meme sur un fichier de
@@ -148,6 +230,7 @@ def extract_metadata(video_path: Path, source: str, source_type: str) -> dict:
             "original": source,                   # Chemin ou URL d'origine
             "file": str(video_path),              # Fichier reellement utilise
             "filename": video_path.name,
+            **(source_metadata or {}),
         },
         "video": {
             "codec": video_stream.get("codec_name"),
@@ -219,11 +302,12 @@ def ingest(source: str, force: bool = False) -> Path:
 
     # --- 1. Resolution de la source ---
     if is_url(source):
-        video_path = download_video(source)
+        video_path, source_metadata = download_video(source, return_info=True)
         source_type = "url"
     else:
         video_path = Path(source).expanduser().resolve()
         source_type = "local"
+        source_metadata = {}
         if not video_path.is_file():
             raise FileNotFoundError(
                 f"Fichier introuvable : {video_path}\n"
@@ -252,7 +336,12 @@ def ingest(source: str, force: bool = False) -> Path:
 
     # --- 4. Extraction et ecriture des metadonnees ---
     logger.info("Analyse de %s ...", video_path.name)
-    metadata = extract_metadata(video_path, source=source, source_type=source_type)
+    metadata = extract_metadata(
+        video_path,
+        source=source,
+        source_type=source_type,
+        source_metadata=source_metadata,
+    )
 
     with open(metadata_path, "w", encoding="utf-8") as f:
         json.dump(metadata, f, ensure_ascii=False, indent=2)

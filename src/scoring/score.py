@@ -49,6 +49,9 @@ from src.scoring.hooks import (
     score_hook,
     suggest_platform,
 )
+from src.popularity.models import clamp_score
+from src.popularity.normalize import score_window_popularity
+from src.popularity.source import SOURCE_POPULARITY_FILE, load_source_popularity_config
 from src.utils.config import PROJECT_ROOT, get_path, load_config
 from src.utils.ffmpeg import FFmpegError
 from src.utils.logging_setup import get_logger
@@ -66,6 +69,89 @@ def load_scoring_config() -> dict:
     """Charge configs/scoring.yaml (poids et bonus ajustables)."""
     with open(SCORING_CONFIG_FILE, encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def load_source_popularity_manifest(output_dir: Path) -> dict:
+    """Read source popularity signals if Phase 15A produced them."""
+    path = output_dir / SOURCE_POPULARITY_FILE
+    if not path.is_file():
+        return {}
+    try:
+        with open(path, encoding="utf-8") as f:
+            return json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def apply_source_popularity_bonus(editorial_score: float, start: float, end: float,
+                                  family_scores: dict, popularity_manifest: dict,
+                                  mode: str | None = None,
+                                  popularity_config: dict | None = None) -> dict:
+    """Bounded bonus layered on top of editorial scoring; never a replacement."""
+    popularity_config = popularity_config or load_source_popularity_config()
+    selected_mode = mode or popularity_manifest.get("mode") or popularity_config.get("default_mode", "auto")
+    effective_mode = "balanced" if selected_mode == "auto" else selected_mode
+    result = {
+        "editorial_score": round(float(editorial_score), 1),
+        "source_popularity_score": 0.0,
+        "popularity_bonus": 0.0,
+        "popularity_confidence": 0.0,
+        "popularity_provider": popularity_manifest.get("provider"),
+        "popularity_status": popularity_manifest.get("status") or "unavailable",
+        "popularity_mode": selected_mode,
+        "popularity_applied": False,
+        "popularity_reasons": [],
+        "final_score": round(float(editorial_score), 1),
+    }
+    if selected_mode == "off" or not popularity_manifest.get("available"):
+        return result
+
+    score, confidence, reasons = score_window_popularity(
+        start,
+        end,
+        popularity_manifest.get("segments", []),
+    )
+    result.update({
+        "source_popularity_score": round(score, 1),
+        "popularity_confidence": round(confidence, 3),
+        "popularity_reasons": reasons,
+    })
+
+    thresholds = popularity_config.get("scoring", {})
+    if editorial_score < float(thresholds.get("minimum_editorial_score", 55)):
+        result["popularity_reasons"] = reasons + ["editorial score below popularity guardrail"]
+        return result
+    if family_scores.get("structure", 0) < float(thresholds.get("minimum_structure_score", 40)):
+        result["popularity_reasons"] = reasons + ["structure score below popularity guardrail"]
+        return result
+    if family_scores.get("hook", 0) < float(thresholds.get("minimum_hook_score", 35)):
+        result["popularity_reasons"] = reasons + ["hook score below popularity guardrail"]
+        return result
+    if confidence < float(thresholds.get("minimum_confidence", 0.15)):
+        result["popularity_reasons"] = reasons + ["popularity confidence below threshold"]
+        return result
+    if score <= 0:
+        return result
+
+    modes = popularity_config.get("modes", {})
+    mode_settings = modes.get(effective_mode, modes.get("balanced", {"max_boost_points": 10}))
+    if effective_mode == "original":
+        max_boost = float(mode_settings.get("max_boost_points", 6))
+        penalty_cap = float(mode_settings.get("already_popular_penalty_cap", 4))
+        bonus = max_boost * (score / 100.0) * confidence * max(0.2, 1.0 - score / 140.0)
+        penalty = penalty_cap * max(0.0, score - 80.0) / 20.0 * confidence
+        delta = bonus - penalty
+    else:
+        max_boost = float(mode_settings.get("max_boost_points", 10))
+        delta = max_boost * (score / 100.0) * confidence
+
+    final_score = clamp_score(editorial_score + delta)
+    result.update({
+        "popularity_bonus": round(delta, 1),
+        "popularity_applied": abs(delta) > 0.05,
+        "final_score": round(final_score, 1),
+    })
+    return result
 
 
 def _all_language_words(mapping: dict) -> set[str]:
@@ -393,7 +479,8 @@ def select_top_candidates(candidates: list[dict], max_clips: int,
 # Point d'entree du scoring
 # ---------------------------------------------------------------------------
 
-def score_video(source: str, force: bool = False, top: int | None = None) -> Path:
+def score_video(source: str, force: bool = False, top: int | None = None,
+                popularity_mode: str | None = None) -> Path:
     """
     Score les moments forts d'une video et ecrit
     output/<nom_video>/candidates.json. Retourne le chemin du fichier.
@@ -416,6 +503,13 @@ def score_video(source: str, force: bool = False, top: int | None = None) -> Pat
 
     output_dir = metadata_path.parent
     candidates_path = output_dir / "candidates.json"
+    popularity_config = load_source_popularity_config()
+    popularity_manifest = load_source_popularity_manifest(output_dir)
+    selected_popularity_mode = (
+        popularity_mode
+        or popularity_manifest.get("mode")
+        or popularity_config.get("default_mode", "auto")
+    )
 
     # --- Reprise ---
     overwrite = force or config.get("pipeline", {}).get("overwrite", False)
@@ -558,7 +652,7 @@ def score_video(source: str, force: bool = False, top: int | None = None) -> Pat
             start, end, window_words, language, scoring_config, clip_limits
         )
 
-        final_score = (
+        editorial_score = (
             weights["text"] * text_score
             + weights["audio"] * audio_score
             + weights["structure"] * structure_score
@@ -574,12 +668,30 @@ def score_video(source: str, force: bool = False, top: int | None = None) -> Pat
             "structure": round(structure_score, 1),
             "hook": round(hook_score_value, 1),
         }
+        popularity = apply_source_popularity_bonus(
+            editorial_score,
+            start,
+            end,
+            family_scores,
+            popularity_manifest,
+            mode=selected_popularity_mode,
+            popularity_config=popularity_config,
+        )
+        final_score = popularity["final_score"]
         candidate = {
             **window,
             "start": start,
             "start_cut_type": cut_type_by_time.get(start, window["start_cut_type"]),
             "duration": round(duration, 3),
             "score": round(final_score, 1),
+            "editorial_score": popularity["editorial_score"],
+            "source_popularity_score": popularity["source_popularity_score"],
+            "popularity_bonus": popularity["popularity_bonus"],
+            "popularity_confidence": popularity["popularity_confidence"],
+            "popularity_provider": popularity["popularity_provider"],
+            "popularity_status": popularity["popularity_status"],
+            "popularity_mode": popularity["popularity_mode"],
+            "popularity_applied": popularity["popularity_applied"],
             "recentered": recentered,
             "hook_text": hook_text,
             "hook_start_offset": hook_detail["hook_offset_seconds"],
@@ -613,6 +725,21 @@ def score_video(source: str, force: bool = False, top: int | None = None) -> Pat
             },
             "text": " ".join(w["word"] for w in window_words),
             "word_count": len(window_words),
+        }
+        candidate["score_detail"]["source_popularity"] = {
+            "score": popularity["source_popularity_score"],
+            "confidence": popularity["popularity_confidence"],
+            "bonus": popularity["popularity_bonus"],
+            "provider": popularity["popularity_provider"],
+            "status": popularity["popularity_status"],
+            "mode": popularity["popularity_mode"],
+            "applied": popularity["popularity_applied"],
+            "reasons": popularity["popularity_reasons"],
+        }
+        candidate["signals"]["source_popularity"] = {
+            "score": popularity["source_popularity_score"],
+            "confidence": popularity["popularity_confidence"],
+            "reasons": popularity["popularity_reasons"],
         }
         if recentered:
             candidate["original_start"] = original_start
@@ -657,6 +784,12 @@ def score_video(source: str, force: bool = False, top: int | None = None) -> Pat
         "window_count": len(scored),
         "clip_count": len(selected),
         "weights": weights,
+        "source_popularity": {
+            "mode": selected_popularity_mode,
+            "provider": popularity_manifest.get("provider"),
+            "status": popularity_manifest.get("status") or "unavailable",
+            "available": bool(popularity_manifest.get("available")),
+        },
         "candidates": selected,
         "scored_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
     }
@@ -685,10 +818,22 @@ def main() -> int:
         "--force", action="store_true",
         help="Rescore meme si candidates.json existe deja",
     )
+    parser.add_argument(
+        "--popularity-mode",
+        dest="popularity_mode",
+        default=None,
+        choices=["off", "auto", "balanced", "popular", "original"],
+        help="Mode du bonus de popularite source (Phase 15A)",
+    )
     args = parser.parse_args()
 
     try:
-        candidates_path = score_video(args.source, force=args.force, top=args.top)
+        candidates_path = score_video(
+            args.source,
+            force=args.force,
+            top=args.top,
+            popularity_mode=args.popularity_mode,
+        )
     except (FFmpegError, FileNotFoundError, ValueError, RuntimeError) as error:
         logger.error("%s", error)
         return 1

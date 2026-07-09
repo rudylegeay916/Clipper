@@ -47,6 +47,7 @@ def test_build_pipeline_command_uses_sys_executable_and_options():
             "music": "keep",
             "source_rights": "owned",
             "language": "en",
+            "popularity_mode": "popular",
             "resume": True,
             "force": False,
             "skip_preview": True,
@@ -58,6 +59,25 @@ def test_build_pipeline_command_uses_sys_executable_and_options():
     assert "performance" in command
     assert "--skip-preview" in command
     assert "--resume" in command
+    assert "--popularity-mode" in command
+    assert "popular" in command
+
+
+@pytest.mark.parametrize("label,mode", [
+    ("Automatique", "auto"),
+    ("Equilibre", "balanced"),
+    ("Moments populaires", "popular"),
+    ("Moments plus originaux", "original"),
+    ("Desactive", "off"),
+])
+def test_popularity_mode_labels_are_transmitted_to_pipeline(label, mode):
+    options = jobs.default_options()
+    options["popularity_mode"] = jobs.popularity_mode_from_label(label)
+
+    command = jobs.build_pipeline_command("input/video.mp4", options)
+
+    index = command.index("--popularity-mode")
+    assert command[index + 1] == mode
 
 
 def test_start_job_uses_popen_without_shell(monkeypatch, tmp_path):
@@ -179,6 +199,7 @@ def test_project_history_reads_existing_jobs(monkeypatch, tmp_path):
 
 def test_load_ui_and_campaign_configs():
     assert jobs.load_ui_config()["defaults"]["template"] == "creative_social"
+    assert jobs.load_ui_config()["defaults"]["popularity_mode"] == "auto"
     loaded = campaigns.load_campaigns()
     assert "skylar_mae_soccer" in loaded
     assert loaded["default"]["required_mentions"] == {}
@@ -261,6 +282,27 @@ def _make_project(output_dir: Path):
         }),
         encoding="utf-8",
     )
+    (output_dir / "source_popularity_manifest.json").write_text(
+        json.dumps({
+            "provider": "yt_dlp_public_heatmap",
+            "status": "experimental",
+            "available": True,
+            "segments": [],
+        }),
+        encoding="utf-8",
+    )
+    (output_dir / "candidates.json").write_text(
+        json.dumps({"candidates": [{
+            "rank": 1,
+            "source_popularity_score": 80,
+            "popularity_bonus": 4.5,
+            "popularity_provider": "yt_dlp_public_heatmap",
+            "popularity_status": "experimental",
+            "popularity_confidence": 0.65,
+            "popularity_applied": True,
+        }]}),
+        encoding="utf-8",
+    )
     (output_dir / "metadata_posts.json").write_text(
         json.dumps({"posts": [{
             "rank": 1,
@@ -299,7 +341,66 @@ def test_detect_results_and_hook_candidates(tmp_path):
     assert len(clips[0]["hook_candidates"]) == 2
     assert clips[0]["creative_score"] == 82.5
     assert clips[0]["visibility_score"] == 91
+    assert clips[0]["popularity_bonus"] == 4.5
+    assert "Indice popularite source" in clips[0]["popularity_badge"]
     assert "remuneration" in clips[0]["disclaimer"]
+
+
+def _assert_no_viral_claims(text: str):
+    lowered = text.lower()
+    assert "viral garanti" not in lowered
+    assert "fera plus de vues" not in lowered
+
+
+def test_result_badges_cover_youtube_twitch_unavailable_original_and_editorial(tmp_path):
+    output_dir = tmp_path / "project"
+    _make_project(output_dir)
+
+    cases = [
+        (
+            {"provider": "yt_dlp_public_heatmap", "status": "experimental", "available": True, "mode": "balanced"},
+            {"rank": 1, "popularity_applied": True, "popularity_bonus": 4.5,
+             "source_popularity_score": 80, "popularity_provider": "yt_dlp_public_heatmap",
+             "popularity_confidence": 0.65, "popularity_mode": "balanced"},
+            "Indice popularite source",
+        ),
+        (
+            {"provider": "twitch_helix_clips", "status": "available", "available": True, "mode": "popular"},
+            {"rank": 1, "popularity_applied": True, "popularity_bonus": 7.0,
+             "source_popularity_score": 90, "popularity_provider": "twitch_helix_clips",
+             "popularity_confidence": 0.8, "popularity_mode": "popular"},
+            "twitch_helix_clips",
+        ),
+        (
+            {"provider": "yt_dlp_public_heatmap", "status": "unavailable", "available": False, "mode": "auto"},
+            {"rank": 1, "popularity_applied": False},
+            "Popularite source : unavailable",
+        ),
+        (
+            {"provider": "yt_dlp_public_heatmap", "status": "experimental", "available": True, "mode": "original"},
+            {"rank": 1, "popularity_applied": True, "popularity_bonus": -0.3,
+             "source_popularity_score": 90, "popularity_provider": "yt_dlp_public_heatmap",
+             "popularity_confidence": 0.7, "popularity_mode": "original"},
+            "Indice popularite source",
+        ),
+    ]
+
+    for manifest, candidate, expected in cases:
+        (output_dir / "source_popularity_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        (output_dir / "candidates.json").write_text(
+            json.dumps({"candidates": [candidate]}),
+            encoding="utf-8",
+        )
+        clip = results.detect_results(output_dir, "default")[0]
+        text = " ".join(str(clip.get(key) or "") for key in ("popularity_badge", "popularity_explanation"))
+        assert expected in text
+        _assert_no_viral_claims(text)
+
+    (output_dir / "source_popularity_manifest.json").unlink()
+    (output_dir / "candidates.json").unlink()
+    clip = results.detect_results(output_dir, "default")[0]
+    assert clip["popularity_badge"] == "Selection editoriale"
+    _assert_no_viral_claims(clip["popularity_explanation"])
 
 
 def test_update_selected_hook(tmp_path):
