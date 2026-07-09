@@ -21,6 +21,8 @@ $process = Start-Process -FilePath $PythonPath -ArgumentList @(
     "streamlit",
     "run",
     "src\ui\app.py",
+    "--server.address",
+    "127.0.0.1",
     "--server.port",
     "$Port",
     "--server.headless",

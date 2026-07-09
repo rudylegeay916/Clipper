@@ -69,6 +69,22 @@ function Open-AppBrowser {
     }
 }
 
+function Write-AppReady {
+    param(
+        [string]$Url,
+        [string]$LogPath = ""
+    )
+    Write-Host "Otherme Clipper est pret : $Url"
+    if ($LogPath) {
+        Write-Host "Logs : $LogPath"
+    }
+    if (-not $NoBrowser) {
+        if (-not (Open-AppBrowser -Url $Url -MarkerPath $BrowserMarkerPath)) {
+            Write-Host "Otherme Clipper fonctionne. Ouvrez $Url"
+        }
+    }
+}
+
 try {
     $root = Get-ProjectRoot
     $paths = Get-AppPaths -Root $root
@@ -91,18 +107,13 @@ try {
 
     $existingPid = Read-AppPid -PidPath $paths.PidPath
     if (Test-AppPortOpen -Port $port) {
-        Write-Host "Otherme Clipper est pret : $url"
+        Write-AppReady -Url $url
         exit 0
     }
     if ($existingPid -and (Get-ManagedProcess -ProcessId $existingPid -Root $root)) {
         $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
         if (Wait-AppServer -Port $port -PidPath $paths.PidPath -Deadline $deadline) {
-            Write-Host "Otherme Clipper est pret : $url"
-            if (-not $NoBrowser) {
-                if (-not (Open-AppBrowser -Url $url -MarkerPath $BrowserMarkerPath)) {
-                    Write-Host "Otherme Clipper fonctionne. Ouvrez $url"
-                }
-            }
+            Write-AppReady -Url $url
             exit 0
         }
         Write-Host "Un processus Otherme Clipper existe (PID $existingPid), mais le serveur ne repond pas encore sur le port $port."
@@ -127,20 +138,14 @@ try {
 
     $deadline = (Get-Date).AddSeconds($StartupTimeoutSeconds)
     if (Wait-AppServer -Port $port -PidPath $paths.PidPath -Deadline $deadline) {
-        Write-Host "Otherme Clipper est pret : $url"
-        Write-Host "Logs : $($paths.LogPath)"
-        if (-not $NoBrowser) {
-            if (-not (Open-AppBrowser -Url $url -MarkerPath $BrowserMarkerPath)) {
-                Write-Host "Otherme Clipper fonctionne. Ouvrez $url"
-            }
-        }
+        Write-AppReady -Url $url -LogPath $paths.LogPath
         exit 0
     }
 
     $pidValue = Read-AppPid -PidPath $paths.PidPath
     $managed = if ($pidValue) { Get-ManagedProcess -ProcessId $pidValue -Root $root } else { $null }
     if (Test-AppPortOpen -Port $port) {
-        Write-Host "Otherme Clipper est pret : $url"
+        Write-AppReady -Url $url
         exit 0
     }
     if ($managed -or -not $hostProcess.HasExited) {
