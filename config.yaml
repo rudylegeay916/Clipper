@@ -82,6 +82,10 @@ clips:
   min_score: 40             # Score minimal (0-100) pour retenir un clip candidat
   max_overlap: 0.25         # Chevauchement maximal tolere entre deux clips retenus (0-1)
 
+# --- Phase 15A : signaux publics de popularite de source ---
+source_popularity:
+  enabled: true             # Reglages detailles dans configs/source_popularity.yaml
+
 # --- Phase 6 : decoupage ---
 cutting:
   mode: auto                # auto : copie si keyframe proche + source compatible,

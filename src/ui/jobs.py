@@ -27,12 +27,21 @@ JOBS_DIR = PROJECT_ROOT / "output" / "_jobs"
 UPLOADS_DIR = PROJECT_ROOT / "input" / "uploads"
 UI_CONFIG_FILE = PROJECT_ROOT / "configs" / "ui.yaml"
 
+POPULARITY_MODE_LABELS = {
+    "Automatique": "auto",
+    "Equilibre": "balanced",
+    "Moments populaires": "popular",
+    "Moments plus originaux": "original",
+    "Desactive": "off",
+}
+
 PIPELINE_STAGE_LABELS = [
     ("ingestion", "Ingestion"),
     ("preview", "Preview"),
     ("transcription", "Transcription"),
     ("creative_routing", "Creative routing"),
     ("detection", "Detection"),
+    ("source_popularity", "Popularite source"),
     ("scoring", "Scoring"),
     ("cutting", "Decoupage"),
     ("reframe", "Reframe vertical"),
@@ -52,6 +61,7 @@ USER_STAGE_LABELS = {
     "transcription": "Transcription",
     "creative_routing": "Analyse du format",
     "detection": "Selection des meilleurs moments",
+    "source_popularity": "Signaux de popularite",
     "scoring": "Classement des moments",
     "cutting": "Decoupage",
     "reframe": "Adaptation verticale",
@@ -128,6 +138,10 @@ def default_options() -> dict:
     return dict(config.get("defaults", {}))
 
 
+def popularity_mode_from_label(label: str) -> str:
+    return POPULARITY_MODE_LABELS[label]
+
+
 def build_pipeline_command(source: str | Path, options: dict) -> list[str]:
     """Construit la commande pipeline sans shell."""
     command = [sys.executable, "-m", "src.pipeline.run", str(source)]
@@ -148,6 +162,9 @@ def build_pipeline_command(source: str | Path, options: dict) -> list[str]:
     add("--music", options.get("music", "auto"))
     add("--source-rights", options.get("source_rights", "unknown"))
     add("--language", options.get("language", "auto"))
+    popularity_mode = options.get("popularity_mode", "auto")
+    if popularity_mode:
+        command.extend(["--popularity-mode", str(popularity_mode)])
 
     if options.get("resume", True) and not options.get("force"):
         command.append("--resume")

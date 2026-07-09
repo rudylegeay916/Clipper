@@ -52,6 +52,8 @@ STAGES = [
      "outputs": ["creative_manifest.json"]},
     {"id": "detection",     "label": "Silences / coupes",      "essential": False,
      "outputs": ["analysis.json"]},
+    {"id": "source_popularity", "label": "Popularite source",  "essential": False,
+     "outputs": ["source_popularity_manifest.json"]},
     {"id": "scoring",       "label": "Scoring moments forts",  "essential": True,
      "outputs": ["candidates.json"]},
     {"id": "cutting",       "label": "Découpage",              "essential": True,
@@ -102,10 +104,22 @@ def _run_detection(ctx):
     return analyze_video(str(ctx["metadata_path"]), force=ctx["force"])
 
 
+def _run_source_popularity(ctx):
+    from src.popularity.source import run_source_popularity
+    return run_source_popularity(
+        str(ctx["metadata_path"]),
+        force=ctx["force"],
+        force_popularity=ctx["options"].get("force_popularity", False),
+        mode=ctx["options"].get("popularity_mode"),
+        resume=ctx["options"].get("resume", True),
+    )
+
+
 def _run_scoring(ctx):
     from src.scoring.score import score_video
     return score_video(str(ctx["metadata_path"]), force=ctx["force"],
-                       top=ctx["options"].get("top"))
+                       top=ctx["options"].get("top"),
+                       popularity_mode=ctx["options"].get("popularity_mode"))
 
 
 def _run_creative_routing(ctx):
@@ -186,6 +200,7 @@ RUNNERS = {
     "transcription": _run_transcription,
     "creative_routing": _run_creative_routing,
     "detection": _run_detection,
+    "source_popularity": _run_source_popularity,
     "scoring": _run_scoring, "cutting": _run_cutting,
     "reframe": _run_reframe,
     "speech_decision": _run_speech_decision,
@@ -233,6 +248,50 @@ def _validate_stage_id(stage_id: str | None, flag: str) -> None:
 
 def _outputs_exist(output_dir: Path, stage: dict) -> bool:
     return all((output_dir / rel).is_file() for rel in stage["outputs"])
+
+
+def _source_popularity_cache_reusable(output_dir: Path, options: dict) -> bool:
+    path = output_dir / "source_popularity_manifest.json"
+    if not path.is_file() or options.get("force_popularity"):
+        return False
+    try:
+        with open(path, encoding="utf-8") as f:
+            manifest = json.load(f)
+        from src.popularity.normalize import is_cache_fresh
+        from src.popularity.source import load_source_popularity_config
+
+        config = load_source_popularity_config()
+        mode = options.get("popularity_mode") or config.get("default_mode", "auto")
+        return manifest.get("mode") == mode and is_cache_fresh(
+            manifest,
+            config.get("cache_hours", 24),
+        )
+    except (OSError, json.JSONDecodeError, ValueError):
+        return False
+
+
+def _stage_outputs_reusable(output_dir: Path, stage: dict, options: dict) -> bool:
+    if not _outputs_exist(output_dir, stage):
+        return False
+    if stage["id"] == "source_popularity":
+        return _source_popularity_cache_reusable(output_dir, options)
+    return True
+
+
+def _add_source_popularity_details(output_dir: Path, entry: dict) -> None:
+    path = output_dir / "source_popularity_manifest.json"
+    if not path.is_file():
+        return
+    try:
+        with open(path, encoding="utf-8") as f:
+            data = json.load(f)
+    except (OSError, json.JSONDecodeError):
+        return
+    entry["provider"] = data.get("provider")
+    entry["popularity_status"] = data.get("status")
+    entry["segment_count"] = data.get("segment_count", len(data.get("segments", [])))
+    entry["confidence"] = data.get("global_confidence")
+    entry["warnings"] = data.get("warnings", [])
 
 
 # ---------------------------------------------------------------------------
@@ -385,10 +444,12 @@ def run_pipeline(source: str, cli_options: dict | None = None) -> dict:
 
         # --- Reprise pipeline : sorties deja presentes ---
         if (resume and output_dir is not None and not must_resolve
-                and _outputs_exist(output_dir, stage)):
+                and _stage_outputs_reusable(output_dir, stage, options)):
             entry["status"] = "resumed"
             entry["produced"] = stage["outputs"]
             logger.info("%s : ✔ repris (sorties présentes)", label)
+            if stage_id == "source_popularity":
+                _add_source_popularity_details(output_dir, entry)
             manifest["last_completed_stage"] = stage_id
             continue
 
@@ -408,6 +469,8 @@ def run_pipeline(source: str, cli_options: dict | None = None) -> dict:
                 raise RuntimeError(f"sorties attendues manquantes : {missing}")
             entry["status"] = "done"
             entry["produced"] = stage["outputs"]
+            if stage_id == "source_popularity":
+                _add_source_popularity_details(output_dir, entry)
             manifest["last_completed_stage"] = stage_id
             logger.info("%s : ✔ terminé en %.1fs -> %s",
                         label, entry["duration_seconds"], result_path)
@@ -496,7 +559,7 @@ def _dry_run(source: str, options: dict, from_index: int, to_index: int) -> dict
     print(f"\nDRY RUN — {source}")
     print(f"Options : top={options.get('top')} platform={options.get('platform')} "
           f"style={options.get('subtitle_style')} template={options.get('template')} "
-          f"reframe={options.get('reframe_method')}")
+          f"reframe={options.get('reframe_method')} popularity={options.get('popularity_mode')}")
     # Verification des prerequis systeme et configs
     problems = []
     for tool in ("ffmpeg", "ffprobe"):
@@ -505,7 +568,7 @@ def _dry_run(source: str, options: dict, from_index: int, to_index: int) -> dict
     for config_file in ("config.yaml", "configs/pipeline.yaml",
                         "configs/scoring.yaml", "configs/subtitle_styles.yaml",
                         "configs/templates.yaml", "configs/export_profiles.yaml",
-                        "configs/visibility.yaml"):
+                        "configs/visibility.yaml", "configs/source_popularity.yaml"):
         if not (PROJECT_ROOT / config_file).is_file():
             problems.append(f"config manquante : {config_file}")
     plan = []
@@ -563,6 +626,12 @@ def main() -> int:
                                  "unknown"],
                         help="Droits declares sur la source (trace, jamais de "
                              "garantie de monetisation)")
+    parser.add_argument("--popularity-mode", dest="popularity_mode", default=None,
+                        choices=["off", "auto", "balanced", "popular", "original"],
+                        help="Source popularity signals: off | auto | balanced | popular | original")
+    parser.add_argument("--force-popularity", dest="force_popularity",
+                        action="store_true", default=None,
+                        help="Refresh source_popularity_manifest.json even when resume is enabled")
     parser.add_argument("--resume", action="store_true", default=None,
                         help="Saute les etapes dont les sorties existent deja")
     parser.add_argument("--force", action="store_true", default=None,

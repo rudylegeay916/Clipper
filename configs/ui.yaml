@@ -18,6 +18,7 @@ ui:
     template: creative_social
     music: auto
     language: auto
+    popularity_mode: auto
     resume: true
     force: false
     skip_preview: false

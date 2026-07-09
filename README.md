@@ -407,6 +407,16 @@ Le pipeline ne refait jamais un travail déjà fait : si `output/<video>/metadat
 
 Le pipeline fonctionne entièrement en local. Seule la génération de titres/hashtags (Phase 10) peut optionnellement utiliser l'API Claude : copier `.env.example` en `.env` et y renseigner la clé.
 
+## Phase 15A - Popularite source
+
+La selection des moments peut etre completee par des signaux de popularite publics ou optionnels avec `--popularity-mode off|auto|balanced|popular|original`. Ces signaux ajoutent seulement un bonus borne au scoring editorial existant ; ils ne garantissent jamais la viralite.
+
+YouTube public : utilise uniquement le champ `heatmap` quand yt-dlp l'expose dans les metadonnees. Aucun scraping HTML ni endpoint prive.
+
+Twitch : peut lire les clips publics d'une VOD via Helix si `.env` contient `TWITCH_CLIENT_ID` et `TWITCH_CLIENT_SECRET`. Les clips ne sont pas telecharges ; seuls `video_id`, `vod_offset`, `duration` et `view_count` servent au score. Les tokens ne sont pas ecrits dans les logs ni les manifests.
+
+Kick : retourne `unsupported` en l'absence de source officielle stable exploitable sans scraping prive.
+
 ## Lancement Windows local
 
 Premiere installation : double-cliquer sur `Installer les dependances.bat`. Le script verifie Python 3.11, cree `.venv` si necessaire, installe `requirements.txt` si Streamlit manque, puis verifie FFmpeg. Il ne telecharge pas Python ni FFmpeg automatiquement ; si un prerequis manque, il affiche les commandes recommandees.
