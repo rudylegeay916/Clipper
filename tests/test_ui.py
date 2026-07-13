@@ -1,4 +1,5 @@
 import io
+import inspect
 import json
 import os
 import sys
@@ -706,7 +707,7 @@ def test_detect_results_marks_invalid_final_without_showing_video(monkeypatch, t
     clip = results.detect_results(output_dir, "default")[0]
 
     assert clip["video_valid"] is False
-    assert clip["video_error"] == "Le rendu video est incomplet ou corrompu. Regenerez ce clip."
+    assert clip["video_error"] == "La video generee est invalide. L'ancien fichier a ete conserve."
     assert clip["result_state"] == "render_invalid"
 
 
@@ -721,7 +722,7 @@ def test_detect_results_masks_temporary_rendering_files(tmp_path):
     clip = results.detect_results(output_dir, "default")[0]
 
     assert clip["video_valid"] is False
-    assert "temporaire" in clip["video_error"]
+    assert "en cours de rendu" in clip["video_error"]
     assert clip["result_state"] == "processing"
 
 
@@ -747,7 +748,7 @@ def test_result_state_timeline_missing_blocks_old_final(monkeypatch, tmp_path):
 
     assert clip["result_state"] == "timeline_missing"
     assert clip["video_valid"] is False
-    assert "Timings source indisponibles" in clip["status_message"]
+    assert "ancien" in clip["status_message"]
     assert clip["source_start_seconds"] is None
     assert clip["repair_stage"] == "cutting"
 
@@ -779,7 +780,7 @@ def test_result_state_generation_mismatch_marks_stale(monkeypatch, tmp_path):
 
     assert clip["result_state"] == "stale"
     assert clip["video_valid"] is False
-    assert "manifests actifs" in clip["status_message"]
+    assert "donnees actuelles" in clip["status_message"]
 
 
 def test_render_missing_when_timeline_exists_without_video(tmp_path):
@@ -793,7 +794,7 @@ def test_render_missing_when_timeline_exists_without_video(tmp_path):
 
     assert clip["result_state"] == "render_missing"
     assert clip["video_valid"] is False
-    assert "manquant ou invalide" in clip["status_message"]
+    assert "manquant" in clip["status_message"]
 
 
 def test_build_repair_rerender_command_uses_first_missing_stage(tmp_path):
@@ -1140,6 +1141,153 @@ def test_create_zip_without_duplicates(tmp_path):
     assert "exports/tiktok/clip_01/caption.txt" in names
     assert "creative_manifest.json" in names
     assert "visibility_report.json" in names
+
+
+def test_readable_project_status_completed_with_clips():
+    state = projects.readable_project_status({
+        "status": "completed",
+        "valid_clip_count": 3,
+        "export_count": 3,
+    })
+
+    assert state["label"] == "Termine avec clips"
+    assert "3 clip" in state["message"]
+    assert state["next_action"] == "Ouvrir"
+
+
+def test_readable_project_status_completed_without_clips():
+    state = projects.readable_project_status({
+        "status": "completed",
+        "valid_clip_count": 0,
+        "export_count": 0,
+    })
+
+    assert state["label"] == "Termine sans clip exploitable"
+    assert "controle qualite" in state["message"]
+
+
+def test_readable_project_status_failed_is_actionable():
+    state = projects.readable_project_status({"status": "failed"})
+
+    assert state["label"] == "Echec"
+    assert state["next_action"] == "Reprendre"
+
+
+def test_series_three_parts_are_presented_as_series(monkeypatch, tmp_path):
+    output_dir = tmp_path / "project"
+    _make_project(output_dir)
+    (output_dir / "final" / "final_03.mp4").write_bytes(b"video3")
+    final = json.loads((output_dir / "final_manifest.json").read_text(encoding="utf-8"))
+    final["clips"].append({
+        "rank": 3,
+        "final_file": "final_03.mp4",
+        "duration": 31,
+        "score": 69,
+        "hook_text": "Third hook",
+        "suggested_title": "Third title",
+        "platform_fit": "shorts",
+    })
+    (output_dir / "final_manifest.json").write_text(json.dumps(final), encoding="utf-8")
+    timeline = json.loads((output_dir / "clip_timeline_manifest.json").read_text(encoding="utf-8"))
+    timeline["clips"].append({
+        "rank": 3,
+        "source_duration_seconds": 300,
+        "actual_cut_start_seconds": 120,
+        "actual_cut_end_seconds": 151,
+        "output_duration_seconds": 31,
+    })
+    (output_dir / "clip_timeline_manifest.json").write_text(json.dumps(timeline), encoding="utf-8")
+    (output_dir / "series_plan_manifest.json").write_text(
+        json.dumps({
+            "series_created": True,
+            "total_parts": 3,
+            "publication_order": [1, 2, 3],
+            "episodes": [
+                {"rank": 1, "part_number": 1, "episode_role": "Intro", "cliffhanger_text": "Wait for part 2"},
+                {"rank": 2, "part_number": 2, "episode_role": "Developpement", "cliffhanger_text": "Part 3 is the payoff"},
+                {"rank": 3, "part_number": 3, "episode_role": "Payoff"},
+            ],
+        }),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(results, "validate_mp4", lambda path: None)
+
+    clips = results.detect_results(output_dir, "default")
+
+    assert [clip["series_part_number"] for clip in clips] == [1, 2, 3]
+    assert clips[0]["assembly_label"] == "serie Partie 1/3"
+    assert clips[2]["series_episode_role"] == "Payoff"
+
+
+def test_friendly_errors_hide_internal_codes():
+    assert "source est peut-etre corrompu" in results.friendly_error_message("Conversion failed")
+    assert "ancien" in results.friendly_error_message("timeline_missing")
+    assert "invalide" in results.friendly_error_message("render_invalid")
+
+
+def test_publication_checklist_ready(monkeypatch, tmp_path):
+    output_dir = tmp_path / "project"
+    _make_project(output_dir)
+    monkeypatch.setattr(results, "validate_mp4", lambda path: None)
+
+    clip = results.detect_results(output_dir, "default")[0]
+
+    assert clip["publication_checklist"]["status"] == "Pret a publier"
+
+
+def test_publication_checklist_to_review_when_has_warnings(monkeypatch, tmp_path):
+    output_dir = tmp_path / "project"
+    _make_project(output_dir)
+    creative = json.loads((output_dir / "creative_manifest.json").read_text(encoding="utf-8"))
+    creative["clips"]["1"]["warnings"] = ["verifier droits"]
+    (output_dir / "creative_manifest.json").write_text(json.dumps(creative), encoding="utf-8")
+    monkeypatch.setattr(results, "validate_mp4", lambda path: None)
+
+    clip = results.detect_results(output_dir, "default")[0]
+
+    assert clip["publication_checklist"]["status"] == "A verifier"
+
+
+def test_exports_are_grouped_by_platform(tmp_path):
+    output_dir = tmp_path / "project"
+    _make_project(output_dir)
+
+    exports = results.export_rows(output_dir, [{
+        "rank": 1,
+        "platform": "tiktok",
+        "clip_dir": "clip_01",
+        "exported_file": "clip_01_score90_tiktok.mp4",
+        "duration": 42,
+    }])
+
+    assert exports[0]["platform_label"] == "TikTok"
+    assert exports[0]["status"] == "pret"
+    assert "clip_01_score90_tiktok.mp4" in exports[0]["path"]
+
+
+def test_series_rerender_command_starts_from_series_planning(tmp_path):
+    command = jobs.build_repair_rerender_command(
+        tmp_path / "Project With Spaces" / "metadata.json",
+        2,
+        "series_planning",
+        {"series_mode": "forced", "series_parts": 3},
+    )
+
+    assert command[command.index("--from-stage") + 1] == "series_planning"
+    assert command[command.index("--rank") + 1] == "2"
+    assert command[command.index("--series-mode") + 1] == "forced"
+
+
+def test_phase_17d_navigation_and_technical_details_are_present():
+    from src.ui import app
+
+    source = inspect.getsource(app.main) + inspect.getsource(app.page_settings)
+
+    assert "Nouveau projet" in source
+    assert "Mes projets" in source
+    assert "Resultats" in source
+    assert "Reglages avances" in source
+    assert "Afficher les details techniques" in source
 
 
 def test_windows_paths_with_spaces(monkeypatch, tmp_path):

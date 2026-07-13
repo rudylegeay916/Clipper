@@ -32,6 +32,43 @@ FRAGMENT_PREFIXES = (
     "which means",
 )
 
+USER_STATE_MESSAGES = {
+    "ready": None,
+    "render_missing": "Le fichier video de ce clip est manquant. Regenerez ce clip.",
+    "render_invalid": "La video generee est invalide. L'ancien fichier a ete conserve.",
+    "timeline_missing": "Ce clip est ancien et doit etre regenere avec le nouveau moteur.",
+    "metadata_only": "Ce clip ne contient que des metadonnees. Regenerez-le pour obtenir une video.",
+    "stale": "Ce rendu ne correspond plus aux donnees actuelles. Regenerez ce clip.",
+    "rejected": "Ce clip n'a pas passe le controle qualite.",
+    "processing": "La video est encore en cours de rendu.",
+    "failed": "Le rendu video a echoue. Le fichier source est peut-etre corrompu ou incomplet.",
+}
+
+USER_STATE_LABELS = {
+    "ready": "Pret a publier",
+    "render_missing": "A regenerer",
+    "render_invalid": "A regenerer",
+    "timeline_missing": "A regenerer",
+    "metadata_only": "A regenerer",
+    "stale": "A regenerer",
+    "rejected": "A verifier",
+    "processing": "En cours",
+    "failed": "Echec",
+}
+
+ASSEMBLY_LABELS = {
+    "contiguous": "continu",
+    "single_scene": "continu",
+    "multi_scene": "multi-scenes",
+    "series": "serie",
+}
+
+PLATFORM_LABELS = {
+    "tiktok": "TikTok",
+    "shorts": "Shorts",
+    "reels": "Reels",
+}
+
 
 def utc_now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
@@ -129,17 +166,107 @@ def _safe_validate_video(path: Path, duration: object = None) -> tuple[bool, str
 
 
 def _state_message(status: str) -> str | None:
-    return {
-        "ready": None,
-        "render_missing": "Le fichier video de ce clip est manquant ou invalide.",
-        "render_invalid": "Le rendu video est incomplet ou corrompu. Regenerez ce clip.",
-        "timeline_missing": "Timings source indisponibles. Ce rendu doit etre regenere.",
-        "metadata_only": "Ce clip ne contient que des metadonnees orphelines.",
-        "stale": "Ce rendu ne correspond plus aux manifests actifs. Regenerez ce clip.",
-        "rejected": "Ce clip a ete rejete par le controle qualite.",
-        "processing": "Le rendu video est encore temporaire.",
-        "failed": "Le rendu video a echoue.",
-    }.get(status)
+    return USER_STATE_MESSAGES.get(status)
+
+
+def friendly_error_message(error: str | None) -> str | None:
+    text = str(error or "").strip()
+    if not text:
+        return None
+    lowered = text.lower()
+    if "conversion failed" in lowered:
+        return "Le rendu video a echoue. Le fichier source est peut-etre corrompu ou incomplet."
+    if "timeline_missing" in lowered:
+        return USER_STATE_MESSAGES["timeline_missing"]
+    if "render_invalid" in lowered:
+        return USER_STATE_MESSAGES["render_invalid"]
+    return text
+
+
+def user_state_label(status: str | None) -> str:
+    return USER_STATE_LABELS.get(str(status or ""), str(status or "En attente"))
+
+
+def assembly_label(clip: dict) -> str:
+    if clip.get("series_created") and clip.get("series_part_number"):
+        return (
+            f"serie Partie {clip.get('series_part_number')}/"
+            f"{clip.get('series_total_parts')}"
+        )
+    mode = str(clip.get("assembly_mode") or "contiguous")
+    return ASSEMBLY_LABELS.get(mode, mode.replace("_", " "))
+
+
+def publication_checklist(clip: dict) -> dict:
+    hashtags = clip.get("hashtags") or []
+    duration = clip.get("duration")
+    warnings = clip.get("warnings") or []
+    critical = clip.get("quality_gate_reasons") or []
+    try:
+        duration_ok = duration is None or 0 < float(duration) <= 180
+    except (TypeError, ValueError):
+        duration_ok = False
+    checks = [
+        {
+            "label": "video lisible",
+            "ok": bool(clip.get("video_valid")),
+            "message": clip.get("status_message") or "",
+        },
+        {
+            "label": "sous-titres presents",
+            "ok": clip.get("subtitle_decision") != "disabled",
+            "message": "",
+        },
+        {
+            "label": "description generee",
+            "ok": bool((clip.get("description") or "").strip()),
+            "message": "",
+        },
+        {
+            "label": "hashtags presents",
+            "ok": bool(hashtags),
+            "message": "",
+        },
+        {
+            "label": "duree compatible plateforme",
+            "ok": duration_ok,
+            "message": "",
+        },
+        {
+            "label": "aucun avertissement critique",
+            "ok": not critical,
+            "message": ", ".join(str(item) for item in critical),
+        },
+    ]
+    if not clip.get("video_valid") or clip.get("result_state") in {
+        "render_invalid", "render_missing", "timeline_missing", "stale", "failed",
+    }:
+        status = "A regenerer"
+    elif warnings or any(not check["ok"] for check in checks):
+        status = "A verifier"
+    else:
+        status = "Pret a publier"
+    return {"status": status, "checks": checks}
+
+
+def export_rows(output_dir: Path, exports: list[dict]) -> list[dict]:
+    rows = []
+    for entry in exports:
+        path = _export_path(output_dir, entry)
+        exists = path.is_file()
+        rows.append({
+            "platform": str(entry.get("platform") or ""),
+            "platform_label": PLATFORM_LABELS.get(
+                str(entry.get("platform") or ""), str(entry.get("platform") or "-")
+            ),
+            "file": entry.get("exported_file") or path.name,
+            "path": str(path),
+            "folder": str(path.parent),
+            "duration": entry.get("duration"),
+            "size_bytes": path.stat().st_size if exists else None,
+            "status": "pret" if exists else "manquant",
+        })
+    return rows
 
 
 def _repair_stage(state: dict) -> str:
@@ -333,13 +460,14 @@ def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[
             candidate,
         )
         clip_exports = [e for e in exports if int(e.get("rank", 0)) == rank]
-        results.append({
+        result = {
             "rank": rank,
             "final_file": final_name,
             "final_path": str(final_path),
             "video_valid": video_valid,
             "video_error": video_error,
             "result_state": state["status"],
+            "result_state_label": user_state_label(state["status"]),
             "status_message": state.get("message"),
             "repair_stage": state.get("repair_stage"),
             "duration": clip.get("duration"),
@@ -396,9 +524,13 @@ def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[
                         + manifests["creative"].get("warnings", []),
             "platform_eligibility": creative.get("platform_eligibility", []),
             "exports": clip_exports,
+            "exports_by_platform": export_rows(Path(output_dir), clip_exports),
             "disclaimer": DISCLAIMER,
             "video_version": video_version(Path(output_dir) / "final" / clip.get("final_file", "")),
-        })
+        }
+        result["assembly_label"] = assembly_label(result)
+        result["publication_checklist"] = publication_checklist(result)
+        results.append(result)
     return results
 
 

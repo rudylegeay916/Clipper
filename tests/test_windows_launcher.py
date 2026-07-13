@@ -383,7 +383,7 @@ def test_start_opens_browser_only_after_port_is_ready(tmp_path):
     port = free_port()
     pid_path = PROJECT_ROOT / "runtime" / "streamlit.pid"
     marker = tmp_path / "browser.txt"
-    host_script = write_fake_host_script(tmp_path / "fake_host.ps1", delay=0.5)
+    host_script = write_fake_host_script(tmp_path / "fake_host.ps1", delay=0.0)
 
     try:
         result = run_script(
