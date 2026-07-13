@@ -8,6 +8,10 @@ from pathlib import Path
 
 import streamlit as st
 
+from src.performance.csv_io import export_csv, import_csv, template_csv
+from src.performance.insights import build_insights, dashboard, derived_by_post
+from src.performance.models import PerformanceSnapshot, PublishedPost, normalize_platform
+from src.performance.storage import PerformanceStore
 from src.popularity.source import load_source_popularity_config
 from src.popularity.youtube_analytics import (
     connect_youtube,
@@ -108,6 +112,41 @@ def _render_exports(clip: dict) -> None:
                 key=f"open_export_folder_{clip['rank']}_{export.get('platform')}",
             ):
                 _open_local_path(export.get("folder", ""))
+
+
+def _post_from_clip(job: dict, output_dir: Path, clip: dict) -> PublishedPost:
+    exports = clip.get("exports_by_platform") or []
+    first_export = exports[0] if exports else {}
+    platform = normalize_platform(first_export.get("platform") or clip.get("recommended_platform"))
+    return PublishedPost(
+        post_id=f"{job.get('job_id', output_dir.name)}_{clip['rank']}_{platform}",
+        project_id=str(job.get("job_id") or output_dir.name),
+        project_name=job.get("project_name") or output_dir.name,
+        clip_rank=clip.get("rank") or 0,
+        export_path=first_export.get("path") or clip.get("final_path") or "",
+        platform=platform,
+        campaign_name=job.get("campaign_profile", "default"),
+        assembly_mode=clip.get("assembly_mode") or "",
+        series_id=clip.get("series_id") or "",
+        series_part_number=clip.get("series_part_number"),
+        series_total_parts=clip.get("series_total_parts"),
+        hook_text=clip.get("selected_hook") or "",
+        title=clip.get("title") or "",
+        description=clip.get("description") or "",
+        hashtags=clip.get("hashtags") or [],
+        duration_seconds=clip.get("duration"),
+    )
+
+
+def _track_clip(job: dict, output_dir: Path, clip: dict) -> None:
+    store = PerformanceStore()
+    post = _post_from_clip(job, output_dir, clip)
+    store.upsert_post(post)
+    st.success("Clip ajoute aux performances. Completez l'URL et les metriques dans la page Performances.")
+
+
+def _format_rate(value: float | None) -> str:
+    return f"{(value or 0) * 100:.2f}%"
 
 
 def _source_form(ui_config: dict) -> tuple[str | Path | None, str, str]:
@@ -499,6 +538,8 @@ def render_results(job: dict) -> None:
                         st.rerun()
                     except (ValueError, FileNotFoundError) as error:
                         st.error(str(error))
+                if action_cols[2].button("Ajouter aux performances", key=f"track_performance_{clip['rank']}"):
+                    _track_clip(job, output_dir, clip)
                 _copy_text_button(
                     "Copier description",
                     clip.get("description") or "",
@@ -947,11 +988,131 @@ def page_results() -> None:
     st.info("Choisissez un projet dans Mes projets, puis cliquez sur Ouvrir.")
 
 
+def page_performances() -> None:
+    st.title("Performances")
+    store = PerformanceStore()
+    data = store.load()
+    summary = dashboard(data)
+
+    cols = st.columns(5)
+    cols[0].metric("Posts suivis", summary["post_count"])
+    cols[1].metric("Vues", summary["total_views"])
+    cols[2].metric("Likes", summary["total_likes"])
+    cols[3].metric("Partages", summary["total_shares"])
+    cols[4].metric("Sauvegardes", summary["total_saves"])
+
+    st.caption(
+        f"Meilleure plateforme : {summary.get('best_platform') or '-'} | "
+        f"Meilleur montage : {summary.get('best_assembly_mode') or '-'} | "
+        f"Tendance recente : {summary.get('recent_trend') or '-'}"
+    )
+
+    derived = derived_by_post(data)
+    rows = []
+    posts_by_id = {post["post_id"]: post for post in data["posts"]}
+    for post in data["posts"]:
+        perf = derived.get(post["post_id"], {})
+        rows.append({
+            "post_id": post["post_id"],
+            "plateforme": post.get("platform"),
+            "projet": post.get("project_name"),
+            "clip": post.get("clip_rank"),
+            "url": post.get("post_url"),
+            "vues": perf.get("latest_views", 0),
+            "engagement": _format_rate(perf.get("engagement_rate", 0)),
+            "score": perf.get("performance_score", 0),
+            "tendance": perf.get("trend"),
+        })
+    if rows:
+        st.dataframe(rows, use_container_width=True)
+    else:
+        st.info("Aucun post suivi pour le moment.")
+
+    with st.expander("Ajouter manuellement un post publie"):
+        post_id = st.text_input("post_id", value="")
+        platform = st.selectbox("Plateforme", ["tiktok", "youtube_shorts", "instagram_reels", "other"])
+        post_url = st.text_input("URL du post")
+        published_at = st.text_input("Date de publication", value="")
+        project_name = st.text_input("Nom du projet")
+        clip_rank = st.number_input("Clip", min_value=0, max_value=999, value=0)
+        notes = st.text_area("Notes", value="")
+        if st.button("Enregistrer le post", key="performance_add_post"):
+            post = PublishedPost(
+                post_id=post_id,
+                platform=platform,
+                post_url=post_url,
+                published_at=published_at,
+                project_name=project_name,
+                clip_rank=clip_rank,
+                notes=notes,
+            )
+            store.upsert_post(post)
+            st.success("Post enregistre.")
+            st.rerun()
+
+    if data["posts"]:
+        with st.expander("Ajouter un snapshot de metriques"):
+            selected_post = st.selectbox("Post", [post["post_id"] for post in data["posts"]])
+            views = st.number_input("Vues", min_value=0, value=0)
+            likes = st.number_input("Likes", min_value=0, value=0)
+            comments = st.number_input("Commentaires", min_value=0, value=0)
+            shares = st.number_input("Partages", min_value=0, value=0)
+            saves = st.number_input("Sauvegardes", min_value=0, value=0)
+            followers = st.number_input("Abonnes gagnes", min_value=0, value=0)
+            watch = st.number_input("Duree moyenne de visionnage", min_value=0.0, value=0.0)
+            completion = st.number_input("Taux de completion", min_value=0.0, max_value=1.0, value=0.0)
+            days = st.number_input("Jours apres publication", min_value=0, value=0)
+            snap_notes = st.text_area("Notes snapshot", value="", key="snapshot_notes")
+            if st.button("Ajouter le snapshot", key="performance_add_snapshot"):
+                snapshot = PerformanceSnapshot(
+                    snapshot_id="",
+                    post_id=selected_post,
+                    days_after_publish=days,
+                    views=views,
+                    likes=likes,
+                    comments=comments,
+                    shares=shares,
+                    saves=saves,
+                    followers_gained=followers,
+                    average_watch_seconds=watch,
+                    completion_rate=completion,
+                    notes=snap_notes,
+                )
+                _entry, added = store.add_snapshot(snapshot)
+                st.success("Snapshot ajoute." if added else "Snapshot identique deja present.")
+                st.rerun()
+
+        with st.expander("Modifier URL ou notes"):
+            selected_post = st.selectbox("Post a modifier", [post["post_id"] for post in data["posts"]])
+            post = posts_by_id[selected_post]
+            new_url = st.text_input("Nouvelle URL", value=post.get("post_url", ""))
+            new_notes = st.text_area("Nouvelles notes", value=post.get("notes", ""))
+            if st.button("Mettre a jour", key="performance_update_post"):
+                updated = PublishedPost.from_dict({**post, "post_url": new_url, "notes": new_notes})
+                store.upsert_post(updated)
+                st.success("Post mis a jour.")
+                st.rerun()
+
+    st.markdown("### CSV")
+    csv_content = export_csv(store)
+    st.download_button("Exporter CSV", csv_content, file_name="otherme_performances.csv", mime="text/csv")
+    st.download_button("Telecharger le template CSV", template_csv(), file_name="performance_template.csv", mime="text/csv")
+    uploaded = st.file_uploader("Importer CSV", type=["csv"])
+    if uploaded is not None:
+        report = import_csv(uploaded.read().decode("utf-8-sig"), store)
+        st.write(report)
+        st.rerun()
+
+    st.markdown("### Insights")
+    for insight in build_insights(data):
+        st.write(insight)
+
+
 def main() -> None:
     _init_state()
     page = st.sidebar.radio(
         "Navigation",
-        ["Nouveau projet", "Mes projets", "Resultats", "Reglages avances"],
+        ["Nouveau projet", "Mes projets", "Resultats", "Performances", "Reglages avances"],
     )
     if page == "Nouveau projet":
         page_new_project()
@@ -959,6 +1120,8 @@ def main() -> None:
         page_projects()
     elif page == "Resultats":
         page_results()
+    elif page == "Performances":
+        page_performances()
     else:
         page_settings()
 

@@ -1290,6 +1290,43 @@ def test_phase_17d_navigation_and_technical_details_are_present():
     assert "Afficher les details techniques" in source
 
 
+def test_phase_18a_performance_page_and_button_are_present():
+    from src.ui import app
+
+    source = inspect.getsource(app.main) + inspect.getsource(app.render_results)
+
+    assert "Performances" in source
+    assert "Ajouter aux performances" in source
+    assert "track_performance_" in source
+
+
+def test_phase_18a_prefill_post_from_clip():
+    from src.ui import app
+
+    job = {"job_id": "job with spaces", "project_name": "Project", "campaign_profile": "campaign"}
+    clip = {
+        "rank": 2,
+        "exports_by_platform": [{"platform": "tiktok", "path": r"C:\Project With Spaces\clip.mp4"}],
+        "title": "Title",
+        "description": "Description #paidpartner",
+        "hashtags": ["#paidpartner"],
+        "selected_hook": "Hook",
+        "duration": 42,
+        "assembly_mode": "multi_scene",
+        "series_id": "series_1",
+        "series_part_number": 1,
+        "series_total_parts": 3,
+    }
+
+    post = app._post_from_clip(job, Path(r"C:\Output With Spaces"), clip)
+
+    assert post.project_id == "job with spaces"
+    assert post.clip_rank == 2
+    assert post.platform == "tiktok"
+    assert post.series_part_number == 1
+    assert "#paidpartner" in post.hashtags
+
+
 def test_windows_paths_with_spaces(monkeypatch, tmp_path):
     _patch_job_dirs(monkeypatch, tmp_path)
     source = tmp_path / "folder with spaces" / "video file.mp4"
