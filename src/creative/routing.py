@@ -251,6 +251,7 @@ def apply_content_mode(output_dir: Path, metadata: dict, mode: str,
     Retourne le clips_manifest final.
     """
     from src.cutting.cut import cut_single_clip, build_clip_filename
+    from src.timeline import write_timeline_manifest
 
     manifest_path = output_dir / "clips_manifest.json"
     clips_manifest = (json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -350,4 +351,5 @@ def apply_content_mode(output_dir: Path, metadata: dict, mode: str,
     clips_manifest["clip_count"] = len(clips_manifest["clips"])
     manifest_path.write_text(
         json.dumps(clips_manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    write_timeline_manifest(output_dir, clips_manifest["clips"], duration)
     return clips_manifest

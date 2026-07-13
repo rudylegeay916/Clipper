@@ -309,6 +309,27 @@ def test_pipeline_resume_refreshes_expired_source_popularity_cache(tmp_path, mon
     assert calls == [metadata_path]
 
 
+def test_pipeline_resume_does_not_reuse_corrupted_final_mp4(tmp_path):
+    output_dir = tmp_path / "output" / "project"
+    final_dir = output_dir / "final"
+    final_dir.mkdir(parents=True)
+    final_path = final_dir / "final_01.mp4"
+    final_path.write_bytes(
+        b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2"
+        b"\x00\x00\x00\x08moov"
+        b"\x00\x00\x00\x20mdatshort"
+    )
+    (output_dir / "final_manifest.json").write_text(
+        json.dumps({"clips": [{"rank": 1, "final_file": final_path.name}]}),
+        encoding="utf-8",
+    )
+    stage = next(stage for stage in STAGES if stage["id"] == "templates")
+
+    assert pipeline_run._stage_outputs_reusable(output_dir, stage, {}) is False
+    assert not final_path.exists()
+    assert list(final_dir.glob("final_01.mp4.invalid-*"))
+
+
 def test_essential_failure_stops(mocked_runners):
     """Echec d'une etape essentielle -> arret, etapes suivantes sautees."""
     calls, _ = mocked_runners

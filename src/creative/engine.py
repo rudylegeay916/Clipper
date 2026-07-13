@@ -65,6 +65,13 @@ def _load_json(output_dir: Path, name: str) -> dict:
     return json.loads(path.read_text(encoding="utf-8")) if path.is_file() else {}
 
 
+def _rank_filtered(items: list[dict], options: dict) -> list[dict]:
+    rank = options.get("rank")
+    if not rank:
+        return items
+    return [item for item in items if int(item.get("rank", 0)) == int(rank)]
+
+
 # ---------------------------------------------------------------------------
 # Droits et originalite
 # ---------------------------------------------------------------------------
@@ -229,7 +236,11 @@ def run_cutting_with_mode(metadata_path: Path, options: dict, force: bool) -> Pa
 
     if mode != "preserve_short":
         from src.cutting.cut import cut_clips
-        cut_clips(str(metadata_path), force=force, top=options.get("top"))
+        cut_clips(str(metadata_path), force=force, top=options.get("top"),
+                  rank=options.get("rank"))
+        if options.get("rank"):
+            save_manifest(output_dir, manifest)
+            return output_dir / "clips_manifest.json"
 
     routing.apply_content_mode(output_dir, metadata, mode,
                                manifest.get("requested_profiles", []), warnings)
@@ -247,7 +258,7 @@ def run_speech_decision(metadata_path: Path, options: dict) -> Path:
                             options.get("subtitles") or "auto")
 
     clips = manifest.setdefault("clips", {})
-    for clip in clips_manifest.get("clips", []):
+    for clip in _rank_filtered(clips_manifest.get("clips", []), options):
         analysis = speech.analyze_speech(
             transcript.get("segments", []), clip["cut_start"], clip["cut_end"])
         decision, reason = speech.decide_subtitles(analysis, cli_mode)
@@ -280,15 +291,21 @@ def run_subtitles_conditional(metadata_path: Path, options: dict, force: bool) -
     materialisation sans burn (aucun lancement du moteur ASS)."""
     output_dir = metadata_path.parent
     manifest = load_manifest(output_dir)
-    decisions = [c.get("subtitle_decision")
-                 for c in manifest.get("clips", {}).values()]
+    rank = options.get("rank")
+    manifest_clips = manifest.get("clips", {})
+    selected_clips = (
+        [manifest_clips.get(str(rank), {})]
+        if rank else list(manifest_clips.values())
+    )
+    decisions = [c.get("subtitle_decision") for c in selected_clips]
     if decisions and all(d == "skip" for d in decisions):
         logger.info("Aucune parole significative : burn ASS non lance")
         return speech.materialize_without_subtitles(output_dir)
     from src.subtitles.burn import burn_subtitles
     return burn_subtitles(str(metadata_path), force=force,
                           style_name=options.get("subtitle_style"),
-                          top=options.get("top"))
+                          top=options.get("top"),
+                          rank=options.get("rank"))
 
 
 def run_creative_hooks(metadata_path: Path, options: dict) -> Path:
@@ -303,7 +320,7 @@ def run_creative_hooks(metadata_path: Path, options: dict) -> Path:
     campaign_language = options.get("language")
 
     clips = manifest.setdefault("clips", {})
-    for clip in clips_manifest.get("clips", []):
+    for clip in _rank_filtered(clips_manifest.get("clips", []), options):
         words = [w["word"] for s in transcript.get("segments", [])
                  for w in s.get("words", [])
                  if w["end"] > clip["cut_start"] and w["start"] < clip["cut_end"]]
@@ -336,7 +353,7 @@ def run_creative_music(metadata_path: Path, options: dict) -> Path:
     has_audio = metadata.get("audio", {}).get("present", True)
 
     clips = manifest.setdefault("clips", {})
-    for clip in clips_manifest.get("clips", []):
+    for clip in _rank_filtered(clips_manifest.get("clips", []), options):
         entry = clips.setdefault(str(clip["rank"]), {"rank": clip["rank"]})
         speech_info = entry.get("speech", {"speech_detected": True,
                                            "speech_word_count": 99,
@@ -357,13 +374,11 @@ def run_creative_music(metadata_path: Path, options: dict) -> Path:
                                 if c["rank"] == clip["rank"]), None)
             if final_entry:
                 final_path = output_dir / "final" / final_entry["final_file"]
-                mixed = final_path.with_name(final_path.stem + "_music.mp4")
                 try:
                     music_module.apply_music(
-                        final_path, PROJECT_ROOT / track["path"], mixed,
+                        final_path, PROJECT_ROOT / track["path"], final_path,
                         gain_db=decision["music_gain"],
                         ducking=decision["ducking_applied"])
-                    mixed.replace(final_path)
                 except Exception as error:
                     manifest["warnings"].append(
                         f"musique non appliquee au clip {clip['rank']} : {error}")

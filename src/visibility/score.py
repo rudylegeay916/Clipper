@@ -625,8 +625,13 @@ def _load_json_if_exists(path: Path) -> dict | None:
     return None
 
 
-def _merge_rank_entries(existing: list[dict], updated: list[dict]) -> list[dict]:
-    by_rank = {int(item["rank"]): item for item in existing if "rank" in item}
+def _merge_rank_entries(existing: list[dict], updated: list[dict],
+                        replaced_rank: int | None = None) -> list[dict]:
+    by_rank = {
+        int(item["rank"]): item
+        for item in existing
+        if "rank" in item and int(item["rank"]) != replaced_rank
+    }
     for item in updated:
         by_rank[int(item["rank"])] = item
     return [by_rank[rank] for rank in sorted(by_rank)]
@@ -712,7 +717,7 @@ def score_visibility(source: str, force: bool = False, top: int | None = None,
         )
 
     if rank and existing_report:
-        clips = _merge_rank_entries(existing_report.get("clips", []), clips)
+        clips = _merge_rank_entries(existing_report.get("clips", []), clips, int(rank))
     clips.sort(key=lambda c: -c["visibility_score"])
     report = {
         "source": final_manifest["source"],

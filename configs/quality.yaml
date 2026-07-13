@@ -1,0 +1,15 @@
+quality:
+  enabled: true
+  min_opening_completeness: 60
+  min_ending_completeness: 55
+  min_narrative_coherence: 55
+  min_visual_continuity: 65
+  blackdetect:
+    picture_threshold: 0.08
+    pixel_threshold: 0.10
+    min_duration_seconds: 0.25
+    reject_inside_seconds: 0.40
+    boundary_margin_seconds: 0.25
+  boundary_repair:
+    max_context_before_seconds: 8.0
+    max_extension_after_seconds: 5.0

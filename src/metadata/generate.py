@@ -354,8 +354,13 @@ def write_posts_csv(result: dict, csv_path: Path) -> None:
 # Point d'entree
 # ---------------------------------------------------------------------------
 
-def _merge_rank_entries(existing: list[dict], updated: list[dict]) -> list[dict]:
-    by_rank = {int(item["rank"]): item for item in existing if "rank" in item}
+def _merge_rank_entries(existing: list[dict], updated: list[dict],
+                        replaced_rank: int | None = None) -> list[dict]:
+    by_rank = {
+        int(item["rank"]): item
+        for item in existing
+        if "rank" in item and int(item["rank"]) != replaced_rank
+    }
     for item in updated:
         by_rank[int(item["rank"])] = item
     return [by_rank[rank] for rank in sorted(by_rank)]
@@ -475,7 +480,7 @@ def generate_posts(source: str, force: bool = False, top: int | None = None,
 
     # --- Ecriture ---
     if rank and existing_result:
-        posts = _merge_rank_entries(existing_result.get("posts", []), posts)
+        posts = _merge_rank_entries(existing_result.get("posts", []), posts, int(rank))
     result = {
         "source": final_manifest["source"],
         "mode": "local_rules",           # Aucun appel API externe

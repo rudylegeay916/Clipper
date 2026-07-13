@@ -155,7 +155,8 @@ def _run_reframe(ctx):
     return reframe_clips(str(ctx["metadata_path"]), force=ctx["force"],
                          method=ctx["options"].get("reframe_method"),
                          stability=ctx["options"].get("stability"),
-                         top=ctx["options"].get("top"))
+                         top=ctx["options"].get("top"),
+                         rank=ctx["options"].get("rank"))
 
 
 def _run_subtitles(ctx):
@@ -275,6 +276,60 @@ def _stage_outputs_reusable(output_dir: Path, stage: dict, options: dict) -> boo
         return False
     if stage["id"] == "source_popularity":
         return _source_popularity_cache_reusable(output_dir, options)
+    if stage["id"] == "templates":
+        return _final_mp4s_reusable(output_dir)
+    if stage["id"] == "export":
+        return _export_mp4s_reusable(output_dir)
+    return True
+
+
+def _load_json(path: Path) -> dict:
+    if not path.is_file():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return json.load(f)
+
+
+def _validate_or_quarantine_mp4(path: Path) -> bool:
+    if not path.is_file():
+        return False
+    try:
+        from src.utils.ffmpeg import quarantine_invalid_mp4, validate_mp4
+
+        validate_mp4(path)
+        return True
+    except Exception as error:
+        logger.warning("MP4 invalide ignore pour reprise (%s) : %s", path, error)
+        try:
+            quarantine_invalid_mp4(path)
+        except OSError:
+            logger.warning("Impossible de deplacer le MP4 invalide : %s", path)
+        return False
+
+
+def _final_mp4s_reusable(output_dir: Path) -> bool:
+    manifest = _load_json(output_dir / "final_manifest.json")
+    clips = manifest.get("clips", [])
+    if not clips:
+        return False
+    for clip in clips:
+        final_file = clip.get("final_file")
+        if not final_file:
+            return False
+        if not _validate_or_quarantine_mp4(output_dir / "final" / final_file):
+            return False
+    return True
+
+
+def _export_mp4s_reusable(output_dir: Path) -> bool:
+    manifest = _load_json(output_dir / "exports" / "export_manifest.json")
+    exports = manifest.get("exports", [])
+    if not exports:
+        return False
+    for entry in exports:
+        rel = Path("exports") / entry.get("platform", "") / entry.get("clip_dir", "") / entry.get("exported_file", "")
+        if not _validate_or_quarantine_mp4(output_dir / rel):
+            return False
     return True
 
 

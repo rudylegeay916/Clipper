@@ -23,6 +23,9 @@ st.set_page_config(page_title="Otherme Clipper", page_icon="OC", layout="wide")
 
 def _init_state() -> None:
     st.session_state.setdefault("selected_job_id", None)
+    st.session_state.setdefault("selected_project_id", None)
+    st.session_state.setdefault("selected_project_dir", None)
+    st.session_state.setdefault("current_view", "projects")
     st.session_state.setdefault("delete_confirm", None)
 
 
@@ -192,8 +195,7 @@ def page_new_project() -> None:
 def _selected_job_panel() -> None:
     job_id = st.session_state.get("selected_job_id")
     if not job_id:
-        recent = jobs.list_jobs(refresh=True)[:1]
-        job = recent[0] if recent else None
+        return
     else:
         try:
             job = jobs.refresh_job_status(jobs.load_job(job_id))
@@ -204,6 +206,23 @@ def _selected_job_panel() -> None:
         render_job_progress(job)
         if job.get("status") == "completed" and job.get("project_output_dir"):
             render_results(job)
+
+
+def open_project(project_id: str, project_dir: str | Path | None,
+                 job_id: str | None = None) -> None:
+    st.session_state["selected_project_id"] = str(project_id)
+    st.session_state["selected_project_dir"] = str(project_dir) if project_dir else None
+    st.session_state["selected_job_id"] = str(job_id or project_id)
+    st.session_state["current_view"] = "project_detail"
+    st.rerun()
+
+
+def return_to_projects() -> None:
+    st.session_state["current_view"] = "projects"
+    st.session_state["selected_project_id"] = None
+    st.session_state["selected_project_dir"] = None
+    st.session_state["selected_job_id"] = None
+    st.rerun()
 
 
 def render_job_progress(job: dict) -> None:
@@ -278,7 +297,7 @@ def render_results(job: dict) -> None:
         with st.container(border=True):
             cols = st.columns([1, 2])
             video_path = Path(clip["final_path"])
-            if video_path.is_file():
+            if clip.get("result_state") == "ready" and clip.get("video_valid") and video_path.is_file():
                 cols[0].video(str(video_path))
                 cols[0].caption(f"Version rendu : {clip.get('video_version')}")
                 cols[0].download_button(
@@ -287,6 +306,18 @@ def render_results(job: dict) -> None:
                     file_name=video_path.name,
                     key=f"final_{clip['rank']}_{clip.get('video_version')}",
                 )
+            elif clip.get("video_error"):
+                cols[0].error(clip.get("status_message") or "Le fichier video de ce clip est manquant ou invalide.")
+                if cols[0].button("Regenerer ce clip", key=f"repair_{clip['rank']}"):
+                    try:
+                        rerender_job = jobs.create_repair_rerender_job(
+                            job, output_dir, clip["rank"], clip.get("repair_stage") or "templates",
+                            job.get("options", {}),
+                        )
+                        jobs.start_hook_rerender_job(rerender_job)
+                        st.rerun()
+                    except (ValueError, FileNotFoundError) as error:
+                        cols[0].error(str(error))
             with cols[1]:
                 st.markdown(f"#### Clip #{clip['rank']} - {clip.get('duration', '-')}s")
                 st.write(f"Profil : {clip.get('profile')}")
@@ -297,6 +328,59 @@ def render_results(job: dict) -> None:
                     if clip.get("popularity_explanation"):
                         st.write(clip["popularity_explanation"])
                 st.write(f"Plateforme recommandee : {clip.get('recommended_platform', '-')}")
+                if clip.get("source_start_seconds") is not None and clip.get("source_end_seconds") is not None:
+                    st.caption(
+                        f"Source : {clip.get('source_start_seconds')}"
+                        f"s -> {clip.get('source_end_seconds')}s | "
+                        f"duree {clip.get('duration', '-')}s"
+                    )
+                else:
+                    st.caption("Timings source indisponibles. Ce rendu doit etre regenere.")
+                if clip.get("black_segments"):
+                    st.warning(f"Zones noires detectees : {clip['black_segments']}")
+                if clip.get("first_text") or clip.get("last_text"):
+                    st.write("Premier texte :", clip.get("first_text") or "-")
+                    st.write("Dernier texte :", clip.get("last_text") or "-")
+                if (
+                    clip.get("source_duration_seconds") is not None
+                    and clip.get("source_start_seconds") is not None
+                    and clip.get("source_end_seconds") is not None
+                ):
+                    with st.expander("Corriger les timings source"):
+                        source_duration = float(clip.get("source_duration_seconds") or 0)
+                        start_value = float(clip.get("source_start_seconds") or 0)
+                        end_value = float(clip.get("source_end_seconds") or start_value)
+                        new_start = st.number_input(
+                            "Debut source du clip (s)",
+                            min_value=0.0,
+                            max_value=max(source_duration, 0.001),
+                            value=max(0.0, start_value),
+                            step=0.1,
+                            key=f"timing_start_{clip['rank']}",
+                        )
+                        new_end = st.number_input(
+                            "Fin source du clip (s)",
+                            min_value=0.0,
+                            max_value=max(source_duration, 0.001),
+                            value=max(0.0, end_value),
+                            step=0.1,
+                            key=f"timing_end_{clip['rank']}",
+                        )
+                        if clip.get("quality_gate_reasons"):
+                            st.warning("Avertissements : " + ", ".join(clip["quality_gate_reasons"]))
+                        if st.button("Regenerer avec ces timings", key=f"timing_rerender_{clip['rank']}"):
+                            try:
+                                results.save_manual_timing(
+                                    output_dir, clip["rank"], new_start, new_end, source_duration)
+                                timing_job = jobs.create_timing_rerender_job(
+                                    job, output_dir, clip["rank"], job.get("options", {}))
+                                jobs.start_hook_rerender_job(timing_job)
+                                st.rerun()
+                            except ValueError as error:
+                                st.error(str(error))
+                else:
+                    with st.expander("Corriger les timings source"):
+                        st.info("Timings source indisponibles. Ce rendu doit etre regenere.")
                 st.info(clip["disclaimer"])
                 _hook_editor(job, output_dir, clip)
                 st.text_area("Titre recommande", clip.get("title") or "", key=f"title_{clip['rank']}")
@@ -364,6 +448,10 @@ def _hook_editor(parent_job: dict, output_dir: Path, clip: dict) -> None:
 
 
 def page_projects() -> None:
+    if st.session_state.get("current_view") == "project_detail":
+        render_project_detail()
+        return
+
     st.title("Mes projets")
     history = projects.project_history()
     if not history:
@@ -383,15 +471,18 @@ def page_projects() -> None:
                 f"Campagne : {item.get('campaign')}"
             )
             a, b, c, d = cols[1].columns(4)
-            if a.button("Ouvrir", key=f"open_{item['job_id']}"):
-                st.session_state.selected_job_id = item["job_id"]
-                st.rerun()
+            if a.button("Ouvrir", key=f"open_project_{item['job_id']}"):
+                open_project(item["job_id"], item.get("output_dir"), item["job_id"])
             if b.button("Reprendre", key=f"resume_project_{item['job_id']}"):
-                jobs.resume_failed_job(jobs.load_job(item["job_id"]))
+                resumed = jobs.resume_failed_job(jobs.load_job(item["job_id"]))
+                st.session_state["selected_project_id"] = item["job_id"]
+                st.session_state["selected_project_dir"] = item.get("output_dir")
+                st.session_state["selected_job_id"] = resumed["job_id"]
+                st.session_state["current_view"] = "project_detail"
                 st.rerun()
-            if c.button("Afficher les logs", key=f"logs_{item['job_id']}"):
+            if c.button("Afficher les logs", key=f"logs_project_{item['job_id']}"):
                 st.code(_read_log(jobs.load_job(item["job_id"])), language="text")
-            if d.button("Supprimer", key=f"delete_{item['job_id']}"):
+            if d.button("Supprimer", key=f"delete_project_{item['job_id']}"):
                 st.session_state.delete_confirm = item["job_id"]
             if st.session_state.get("delete_confirm") == item["job_id"]:
                 st.warning("Confirmer la suppression de la fiche job uniquement ?")
@@ -399,6 +490,51 @@ def page_projects() -> None:
                     projects.delete_job_record(item["job_id"], confirm=True)
                     st.session_state.delete_confirm = None
                     st.rerun()
+
+
+def _selected_project_job() -> dict | None:
+    job_id = st.session_state.get("selected_job_id")
+    if not job_id:
+        return None
+    try:
+        return jobs.refresh_job_status(jobs.load_job(job_id))
+    except FileNotFoundError:
+        return None
+
+
+def render_project_detail() -> None:
+    job = _selected_project_job()
+    output_dir = Path(st.session_state.get("selected_project_dir") or "")
+
+    if st.button("Retour a Mes projets", key="back_to_projects"):
+        return_to_projects()
+
+    if not job:
+        st.error("Projet introuvable.")
+        return
+
+    st.markdown(f"### Projet : {job.get('project_name', job.get('job_id'))}")
+    st.write(f"Source : {job.get('source') or '-'}")
+    st.write(f"Statut : {job.get('status') or '-'}")
+
+    if job.get("status") in {"pending", "running"}:
+        render_job_progress(job)
+        return
+
+    if job.get("status") == "failed":
+        render_job_progress(job)
+        return
+
+    if job.get("status") == "completed":
+        project_output_dir = Path(job.get("project_output_dir") or output_dir)
+        clips = results.detect_results(project_output_dir, job.get("campaign_profile", "default"))
+        if any(clip.get("result_state") == "ready" for clip in clips):
+            render_results(job)
+        else:
+            st.info("Aucun clip valide n'a ete produit pour ce projet.")
+        return
+
+    render_job_progress(job)
 
 
 def page_settings() -> None:
@@ -467,7 +603,6 @@ def main() -> None:
         page_new_project()
     elif page == "Mes projets":
         page_projects()
-        _selected_job_panel()
     elif page == "Parametres":
         page_settings()
     else:

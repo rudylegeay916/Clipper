@@ -25,7 +25,6 @@ Usage :
 import argparse
 import html
 import json
-import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -34,7 +33,15 @@ import yaml
 
 from src.ingestion.ingest import ingest
 from src.utils.config import PROJECT_ROOT, load_config
-from src.utils.ffmpeg import FFmpegError, parse_frame_rate, probe_media, run_ffmpeg
+from src.utils.ffmpeg import (
+    FFmpegError,
+    copy_mp4_atomically,
+    mp4_render_lock,
+    parse_frame_rate,
+    probe_media,
+    run_ffmpeg_atomic,
+    validate_mp4,
+)
 from src.utils.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -110,8 +117,11 @@ def export_single(final_path: Path, destination: Path, profile: dict,
     (fallback trace). Retourne (encoding_mode, erreurs).
     """
     conform, reasons = conforms_to_profile(info, profile)
+    require_audio = bool(info.get("audio_codec"))
+    validate_mp4(final_path, require_audio=require_audio)
     if conform:
-        shutil.copy2(final_path, destination)
+        with mp4_render_lock(destination):
+            copy_mp4_atomically(final_path, destination, require_audio=require_audio)
         return "copy", []
 
     logger.info("  Reencodage (%s) ...", ", ".join(reasons))
@@ -132,14 +142,16 @@ def export_single(final_path: Path, destination: Path, profile: dict,
     if fps != "source":
         args += ["-r", fps]
     try:
-        run_ffmpeg(args + [destination])
+        with mp4_render_lock(destination):
+            run_ffmpeg_atomic(args, destination, require_audio=True)
         return "reencode", []
     except FFmpegError as error:
         # Dernier recours : le fichier final reste publiable tel quel
         logger.warning(
             "  FALLBACK : reencodage impossible, copie du final tel quel.\n%s", error,
         )
-        shutil.copy2(final_path, destination)
+        with mp4_render_lock(destination):
+            copy_mp4_atomically(final_path, destination, require_audio=require_audio)
         return "copy_fallback", [str(error).splitlines()[-1]]
 
 
@@ -222,11 +234,16 @@ def _load_json_if_exists(path: Path) -> dict | None:
     return None
 
 
-def _merge_rank_exports(existing: list[dict], updated: list[dict]) -> list[dict]:
+def _merge_rank_exports(existing: list[dict], updated: list[dict],
+                        replaced_rank: int | None = None) -> list[dict]:
     by_key = {
         (int(item["rank"]), item["platform"]): item
         for item in existing
-        if "rank" in item and "platform" in item
+        if (
+            "rank" in item
+            and "platform" in item
+            and int(item["rank"]) != replaced_rank
+        )
     }
     for item in updated:
         by_key[(int(item["rank"]), item["platform"])] = item
@@ -392,7 +409,7 @@ def export_clips(source: str, force: bool = False, platform: str = "recommended"
 
     # --- Manifest + preview ---
     if rank and existing_manifest:
-        exports = _merge_rank_exports(existing_manifest.get("exports", []), exports)
+        exports = _merge_rank_exports(existing_manifest.get("exports", []), exports, int(rank))
     manifest = {
         "source": final_manifest["source"],
         "created_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),

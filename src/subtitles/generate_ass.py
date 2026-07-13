@@ -55,7 +55,8 @@ def escape_ass_text(text: str) -> str:
 # Recalage et groupage
 # ---------------------------------------------------------------------------
 
-def realign_words(words: list[dict], cut_start: float, cut_end: float) -> list[dict]:
+def realign_words(words: list[dict], cut_start: float, cut_end: float,
+                  include_absolute: bool = False) -> list[dict]:
     """
     Convertit les timestamps ABSOLUS (video source) en timestamps
     RELATIFS au clip : t_clip = t_source - cut_start.
@@ -72,12 +73,25 @@ def realign_words(words: list[dict], cut_start: float, cut_end: float) -> list[d
         end = min(clip_duration, word["end"] - cut_start)
         if end - start < 0.02:
             continue  # Tronque a presque rien : inaffichable
-        realigned.append({
+        entry = {
             "word": word["word"],
             "start": round(start, 3),
             "end": round(end, 3),
-        })
+        }
+        if include_absolute:
+            entry["absolute_start"] = round(word["start"], 3)
+            entry["absolute_end"] = round(word["end"], 3)
+        realigned.append(entry)
     return realigned
+
+
+def relative_word_time(word: dict, actual_cut_start: float) -> dict:
+    """Return one word on the clip timeline: absolute - actual_cut_start."""
+    start = round(float(word["start"]) - float(actual_cut_start), 3)
+    end = round(float(word["end"]) - float(actual_cut_start), 3)
+    if start < -0.001 or end < -0.001:
+        raise ValueError("Evenement sous-titre negatif apres recalage")
+    return {"word": word["word"], "start": max(0.0, start), "end": max(0.0, end)}
 
 
 def group_words(words: list[dict], max_words_per_line: int,
@@ -147,10 +161,61 @@ def _word_text(word: dict, style: dict) -> str:
 
 
 def _dialogue(start: float, end: float, text: str, margin_v_override: int = 0) -> str:
+    if start < -0.001 or end < -0.001:
+        raise ValueError("Evenement ASS negatif refuse")
+    if end <= start:
+        raise ValueError("Evenement ASS de duree nulle ou negative refuse")
     return (
         f"Dialogue: 0,{format_ass_time(start)},{format_ass_time(end)},"
         f"Default,,0,0,{margin_v_override},,{text}"
     )
+
+
+def parse_ass_time(value: str) -> float:
+    hours, minutes, rest = value.split(":")
+    seconds, centiseconds = rest.split(".")
+    return (
+        int(hours) * 3600
+        + int(minutes) * 60
+        + int(seconds)
+        + int(centiseconds) / 100
+    )
+
+
+def extract_dialogue_events(ass_content: str) -> list[dict]:
+    events = []
+    for line in ass_content.splitlines():
+        if not line.startswith("Dialogue:"):
+            continue
+        parts = line.split(",", 9)
+        if len(parts) < 10:
+            continue
+        events.append({
+            "start": parse_ass_time(parts[1]),
+            "end": parse_ass_time(parts[2]),
+            "text": parts[9],
+        })
+    return events
+
+
+def validate_ass_events(events: list[dict], duration: float,
+                        max_delta_seconds: float | None = None,
+                        diagnostics: list[dict] | None = None) -> None:
+    previous_start = -1.0
+    for event in events:
+        if event["start"] < -0.001:
+            raise ValueError("Evenement ASS negatif")
+        if event["end"] <= event["start"]:
+            raise ValueError("Evenement ASS de duree invalide")
+        if event["end"] > duration + 0.001:
+            raise ValueError("Evenement ASS au-dela de la duree du clip")
+        if event["start"] < previous_start:
+            raise ValueError("Evenements ASS non ordonnes")
+        previous_start = event["start"]
+    if max_delta_seconds is not None and diagnostics:
+        worst = max(abs(item["delta"]) for item in diagnostics)
+        if worst > max_delta_seconds:
+            raise ValueError(f"Delta sous-titres trop eleve : {worst:.3f}s")
 
 
 def build_ass(groups: list[list[dict]], style: dict, karaoke: bool = True,

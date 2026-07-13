@@ -11,8 +11,10 @@ from pathlib import Path
 import yaml
 
 from src.templates.apply import wrap_hook_lines
+from src.timeline import load_timeline_manifest
 from src.ui.campaigns import apply_campaign_to_posts
 from src.utils.config import PROJECT_ROOT
+from src.utils.ffmpeg import validate_mp4
 
 MUSIC_LIBRARY_FILE = PROJECT_ROOT / "configs" / "music_library.yaml"
 
@@ -22,6 +24,13 @@ DISCLAIMER = (
     "des droits et de l'originalite."
 )
 MAX_HOOK_CHARS = 140
+FRAGMENT_PREFIXES = (
+    "amount of",
+    "total of",
+    "because of",
+    "and then",
+    "which means",
+)
 
 
 def utc_now() -> str:
@@ -47,17 +56,211 @@ def load_project_manifests(output_dir: Path) -> dict:
         "pipeline": load_json(output_dir / "pipeline_manifest.json"),
         "source_popularity": load_json(output_dir / "source_popularity_manifest.json"),
         "candidates": load_json(output_dir / "candidates.json"),
+        "clips_manifest": load_json(output_dir / "clips_manifest.json"),
+        "vertical": load_json(output_dir / "vertical_manifest.json"),
+        "subtitles": load_json(output_dir / "subtitles_manifest.json"),
         "creative": load_json(output_dir / "creative_manifest.json"),
         "final": load_json(output_dir / "final_manifest.json"),
         "posts": load_json(output_dir / "campaign_results.json")
                  or load_json(output_dir / "metadata_posts.json"),
         "visibility": load_json(output_dir / "visibility_report.json"),
         "exports": load_json(output_dir / "exports" / "export_manifest.json"),
+        "timeline": {"clips": list(load_timeline_manifest(output_dir).values())},
     }
 
 
 def _by_rank(items: list[dict]) -> dict[int, dict]:
     return {int(item["rank"]): item for item in items if "rank" in item}
+
+
+def _export_path(output_dir: Path, entry: dict) -> Path:
+    return (
+        Path(output_dir)
+        / "exports"
+        / str(entry.get("platform", ""))
+        / str(entry.get("clip_dir", ""))
+        / str(entry.get("exported_file", ""))
+    )
+
+
+def _has_temp_name(name: str) -> bool:
+    return name.endswith((".part", ".tmp")) or ".rendering-" in name
+
+
+def _valid_timeline(timeline: dict) -> bool:
+    try:
+        start = float(timeline.get("actual_cut_start_seconds"))
+        end = float(timeline.get("actual_cut_end_seconds"))
+        duration = float(timeline.get("output_duration_seconds") or end - start)
+    except (TypeError, ValueError):
+        return False
+    return start >= 0 and end > start and duration > 0
+
+
+def _entry_generation(entry: dict) -> str | None:
+    if not entry:
+        return None
+    value = entry.get("generation_id") or entry.get("timeline_version")
+    return str(value) if value is not None else None
+
+
+def _generation_mismatch(entries: list[dict]) -> bool:
+    generations = {_entry_generation(entry) for entry in entries if _entry_generation(entry)}
+    return len(generations) > 1
+
+
+def _safe_validate_video(path: Path, duration: object = None) -> tuple[bool, str | None]:
+    if not path.is_file():
+        return False, "missing"
+    if _has_temp_name(path.name):
+        return False, "temporary"
+    try:
+        if duration is not None and float(duration) <= 0:
+            return False, "zero_duration"
+    except (TypeError, ValueError):
+        return False, "zero_duration"
+    try:
+        validate_mp4(path)
+    except Exception:
+        return False, "invalid"
+    return True, None
+
+
+def _state_message(status: str) -> str | None:
+    return {
+        "ready": None,
+        "render_missing": "Le fichier video de ce clip est manquant ou invalide.",
+        "render_invalid": "Le rendu video est incomplet ou corrompu. Regenerez ce clip.",
+        "timeline_missing": "Timings source indisponibles. Ce rendu doit etre regenere.",
+        "metadata_only": "Ce clip ne contient que des metadonnees orphelines.",
+        "stale": "Ce rendu ne correspond plus aux manifests actifs. Regenerez ce clip.",
+        "rejected": "Ce clip a ete rejete par le controle qualite.",
+        "processing": "Le rendu video est encore temporaire.",
+        "failed": "Le rendu video a echoue.",
+    }.get(status)
+
+
+def _repair_stage(state: dict) -> str:
+    if not state.get("timeline_valid") or not state.get("cut_entry"):
+        return "cutting"
+    if not state.get("vertical_entry"):
+        return "reframe"
+    if not state.get("subtitle_entry"):
+        return "subtitles"
+    if state.get("status") in {"render_missing", "render_invalid", "processing"}:
+        return "templates"
+    if not state.get("post"):
+        return "metadata"
+    if not state.get("visibility"):
+        return "visibility"
+    return "export"
+
+
+def build_result_state(output_dir: Path, rank: int, manifests: dict | None = None) -> dict:
+    output_dir = Path(output_dir)
+    manifests = manifests or load_project_manifests(output_dir)
+    rank = int(rank)
+    candidates_by_rank = _by_rank(manifests["candidates"].get("candidates", []))
+    cuts_by_rank = _by_rank(manifests["clips_manifest"].get("clips", []))
+    vertical_by_rank = _by_rank(manifests["vertical"].get("clips", []))
+    subtitles_by_rank = _by_rank(manifests["subtitles"].get("clips", []))
+    final_by_rank = _by_rank(manifests["final"].get("clips", []))
+    posts_by_rank = _by_rank(manifests["posts"].get("posts", []))
+    visibility_by_rank = _by_rank(manifests["visibility"].get("clips", []))
+    timelines_by_rank = _by_rank(manifests["timeline"].get("clips", []))
+
+    candidate = candidates_by_rank.get(rank, {})
+    cut_entry = cuts_by_rank.get(rank, {})
+    vertical_entry = vertical_by_rank.get(rank, {})
+    subtitle_entry = subtitles_by_rank.get(rank, {})
+    final_entry = final_by_rank.get(rank, {})
+    post = posts_by_rank.get(rank, {})
+    visibility = visibility_by_rank.get(rank, {})
+    timeline = timelines_by_rank.get(rank, {})
+    exports = [e for e in manifests["exports"].get("exports", []) if int(e.get("rank", 0)) == rank]
+
+    final_path = output_dir / "final" / final_entry.get("final_file", "") if final_entry else None
+    final_ok = False
+    final_error = None
+    if final_path is not None:
+        final_ok, final_error = _safe_validate_video(final_path, final_entry.get("duration"))
+
+    export_ok = False
+    export_error = None
+    for export in exports:
+        path = _export_path(output_dir, export)
+        ok, error = _safe_validate_video(path, export.get("duration"))
+        export_ok = export_ok or ok
+        export_error = export_error or error
+
+    timeline_valid = _valid_timeline(timeline)
+    render_referenced = bool(final_entry or exports)
+    active_entries = [
+        entry for entry in (
+            candidate, cut_entry, vertical_entry, subtitle_entry, final_entry, timeline,
+        ) if entry
+    ]
+
+    if _generation_mismatch(active_entries):
+        status = "stale"
+    elif final_error == "temporary" or export_error == "temporary":
+        status = "processing"
+    elif not any((candidate, cut_entry, vertical_entry, subtitle_entry, final_entry, timeline, exports)):
+        status = "metadata_only" if (post or visibility) else "rejected"
+    elif render_referenced and not timeline_valid:
+        status = "timeline_missing"
+    elif timeline_valid and not render_referenced:
+        status = "render_missing"
+    elif render_referenced and not (final_ok or export_ok):
+        status = "render_missing" if final_error == "missing" or export_error == "missing" else "render_invalid"
+    elif timeline_valid and (final_ok or export_ok):
+        status = "ready"
+    else:
+        status = "failed"
+
+    state = {
+        "rank": rank,
+        "status": status,
+        "message": _state_message(status),
+        "ready": status == "ready",
+        "video_valid": status == "ready" and (final_ok or export_ok),
+        "timeline_valid": timeline_valid,
+        "candidate": candidate,
+        "cut_entry": cut_entry,
+        "vertical_entry": vertical_entry,
+        "subtitle_entry": subtitle_entry,
+        "final_entry": final_entry,
+        "post": post,
+        "visibility": visibility,
+        "timeline": timeline,
+        "exports": exports,
+        "final_path": final_path,
+        "final_error": final_error,
+        "has_render_reference": render_referenced,
+    }
+    state["repair_stage"] = _repair_stage(state)
+    return state
+
+
+def _result_ranks(manifests: dict) -> list[int]:
+    ranks: set[int] = set()
+    for key, item_key in (
+        ("candidates", "candidates"),
+        ("clips_manifest", "clips"),
+        ("vertical", "clips"),
+        ("subtitles", "clips"),
+        ("final", "clips"),
+        ("posts", "posts"),
+        ("visibility", "clips"),
+        ("timeline", "clips"),
+    ):
+        for item in manifests[key].get(item_key, []):
+            if "rank" in item:
+                ranks.add(int(item["rank"]))
+    for export in manifests["exports"].get("exports", []):
+        if "rank" in export:
+            ranks.add(int(export["rank"]))
+    return sorted(ranks)
 
 
 def _popularity_badge(source_popularity: dict, candidate: dict) -> tuple[str | None, str | None]:
@@ -88,10 +291,10 @@ def _popularity_badge(source_popularity: dict, candidate: dict) -> tuple[str | N
 
 def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[dict]:
     manifests = load_project_manifests(output_dir)
-    final_clips = manifests["final"].get("clips", [])
     posts = manifests["posts"].get("posts", [])
     if campaign_profile:
         posts = apply_campaign_to_posts(posts, campaign_profile)
+        manifests["posts"] = {"posts": posts}
     posts_by_rank = _by_rank(posts)
     visibility_by_rank = _by_rank(manifests["visibility"].get("clips", []))
     candidates_by_rank = _by_rank(manifests["candidates"].get("candidates", []))
@@ -99,12 +302,20 @@ def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[
     exports = manifests["exports"].get("exports", [])
 
     results = []
-    for clip in final_clips:
-        rank = int(clip["rank"])
+    for rank in _result_ranks(manifests):
+        state = build_result_state(output_dir, rank, manifests)
+        if state["status"] in {"metadata_only", "rejected"} and not state.get("has_render_reference"):
+            continue
+        clip = state.get("final_entry") or state.get("candidate") or state.get("cut_entry") or {"rank": rank}
+        final_name = clip.get("final_file", "")
+        final_path = state.get("final_path") or (Path(output_dir) / "final" / final_name)
+        video_valid = bool(state.get("video_valid"))
+        video_error = state.get("message")
         post = posts_by_rank.get(rank, {})
         creative = creative_clips.get(str(rank), {})
         visibility = visibility_by_rank.get(rank, {})
         candidate = candidates_by_rank.get(rank, {})
+        timeline = state.get("timeline") or {}
         popularity_badge, popularity_explanation = _popularity_badge(
             manifests["source_popularity"],
             candidate,
@@ -112,9 +323,21 @@ def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[
         clip_exports = [e for e in exports if int(e.get("rank", 0)) == rank]
         results.append({
             "rank": rank,
-            "final_file": clip.get("final_file"),
-            "final_path": str(Path(output_dir) / "final" / clip.get("final_file", "")),
+            "final_file": final_name,
+            "final_path": str(final_path),
+            "video_valid": video_valid,
+            "video_error": video_error,
+            "result_state": state["status"],
+            "status_message": state.get("message"),
+            "repair_stage": state.get("repair_stage"),
             "duration": clip.get("duration"),
+            "source_duration_seconds": timeline.get("source_duration_seconds"),
+            "source_start_seconds": timeline.get("actual_cut_start_seconds"),
+            "source_end_seconds": timeline.get("actual_cut_end_seconds"),
+            "black_segments": candidate.get("black_segments", []),
+            "first_text": " ".join((candidate.get("text") or "").split()[:8]),
+            "last_text": " ".join((candidate.get("text") or "").split()[-8:]),
+            "quality_gate_reasons": candidate.get("quality_gate_reasons", []),
             "profile": creative.get("clip_profile") or clip.get("platform_fit") or "auto",
             "creative_score": creative.get("creative_score"),
             "visibility_score": visibility.get("visibility_score"),
@@ -175,6 +398,9 @@ def sanitize_hook_text(hook_text: str) -> str:
         raise ValueError("Le hook ne peut pas etre vide.")
     if len(cleaned) > MAX_HOOK_CHARS:
         raise ValueError(f"Le hook doit faire {MAX_HOOK_CHARS} caracteres maximum.")
+    lowered = cleaned.lower()
+    if any(lowered.startswith(prefix + " ") or lowered == prefix for prefix in FRAGMENT_PREFIXES):
+        raise ValueError("Le hook doit former une proposition autonome comprehensible.")
     if len(wrap_hook_lines(cleaned)) > 2:
         raise ValueError("Le hook doit tenir sur deux lignes maximum.")
     return cleaned
@@ -201,6 +427,33 @@ def update_selected_hook(output_dir: Path, rank: int, hook_text: str,
         "score": 100.0 if hook_type == "custom" else entry.get("selected_hook", {}).get("score", 80.0),
     }
     creative_path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return entry
+
+
+def save_manual_timing(output_dir: Path, rank: int, start_seconds: float,
+                       end_seconds: float, source_duration_seconds: float) -> dict:
+    start_seconds = float(start_seconds)
+    end_seconds = float(end_seconds)
+    source_duration_seconds = float(source_duration_seconds)
+    if start_seconds < 0:
+        raise ValueError("Le debut doit etre superieur ou egal a 0.")
+    if end_seconds <= start_seconds:
+        raise ValueError("La fin doit etre strictement superieure au debut.")
+    if end_seconds > source_duration_seconds:
+        raise ValueError("La fin depasse la duree de la source.")
+    path = Path(output_dir) / "manual_timings.json"
+    manifest = load_json(path) or {"clips": []}
+    clips = {int(item["rank"]): item for item in manifest.get("clips", [])}
+    entry = {
+        "rank": int(rank),
+        "start_seconds": round(start_seconds, 3),
+        "end_seconds": round(end_seconds, 3),
+        "duration_seconds": round(end_seconds - start_seconds, 3),
+        "updated_at": utc_now(),
+    }
+    clips[int(rank)] = entry
+    manifest["clips"] = [clips[key] for key in sorted(clips)]
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return entry
 
 

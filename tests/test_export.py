@@ -18,6 +18,14 @@ from src.export.platforms import (
     probe_stream_info,
 )
 from src.utils.ffmpeg import run_ffmpeg
+from src.utils import ffmpeg as ffmpeg_utils
+from src.utils.ffmpeg import (
+    FFmpegError,
+    MP4ValidationError,
+    copy_mp4_atomically,
+    run_ffmpeg_atomic,
+    validate_mp4,
+)
 
 
 # ---------------------------------------------------------------------------
@@ -101,13 +109,144 @@ def test_export_reencode_when_nonconform(nonconforming_clip, tmp_path):
     assert info["video_codec"] == "h264" and info["audio_codec"] == "aac"
 
 
+def test_validate_mp4_accepts_single_moov_valid_file(conforming_clip):
+    info = validate_mp4(conforming_clip, require_audio=True)
+
+    assert info["duration"] > 0
+    assert info["moov_count"] == 1
+    assert info["video_codec"] == "h264"
+    assert info["audio_codec"] == "aac"
+
+
+def test_validate_mp4_rejects_duplicate_moov(conforming_clip, tmp_path):
+    corrupted = tmp_path / "double_moov.mp4"
+    corrupted.write_bytes(conforming_clip.read_bytes() + b"\x00\x00\x00\x08moov")
+
+    with pytest.raises(MP4ValidationError, match="moov"):
+        validate_mp4(corrupted)
+
+
+def test_validate_mp4_rejects_truncated_mdat_box(tmp_path):
+    truncated = tmp_path / "truncated.mp4"
+    truncated.write_bytes(
+        b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2"
+        b"\x00\x00\x00\x08moov"
+        b"\x00\x00\x00\x20mdatshort"
+    )
+
+    with pytest.raises(MP4ValidationError, match="depasse"):
+        validate_mp4(truncated)
+
+
+def test_validate_mp4_rejects_zero_duration(monkeypatch, tmp_path):
+    path = tmp_path / "zero.mp4"
+    path.write_bytes(
+        b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2"
+        b"\x00\x00\x00\x08moov"
+        b"\x00\x00\x00\x08mdat"
+    )
+    monkeypatch.setattr(ffmpeg_utils, "probe_media", lambda _path: {
+        "format": {"duration": "0"},
+        "streams": [{"codec_type": "video", "codec_name": "h264",
+                     "pix_fmt": "yuv420p", "width": 1080, "height": 1920}],
+    })
+
+    with pytest.raises(MP4ValidationError, match="duree nulle"):
+        validate_mp4(path)
+
+
+def test_validate_mp4_rejects_invalid_h264_decode(monkeypatch, conforming_clip):
+    def failing_decode(*args, **kwargs):
+        raise FFmpegError("Invalid NAL unit size")
+
+    monkeypatch.setattr(ffmpeg_utils, "run_ffmpeg", failing_decode)
+
+    with pytest.raises(MP4ValidationError, match="Decodage complet"):
+        validate_mp4(conforming_clip)
+
+
+def test_validate_mp4_rejects_invalid_aac_codec(monkeypatch, tmp_path):
+    path = tmp_path / "bad_audio.mp4"
+    path.write_bytes(
+        b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2"
+        b"\x00\x00\x00\x08moov"
+        b"\x00\x00\x00\x08mdat"
+    )
+    monkeypatch.setattr(ffmpeg_utils, "probe_media", lambda _path: {
+        "format": {"duration": "10"},
+        "streams": [
+            {"codec_type": "video", "codec_name": "h264",
+             "pix_fmt": "yuv420p", "width": 1080, "height": 1920},
+            {"codec_type": "audio", "codec_name": "mp3"},
+        ],
+    })
+
+    with pytest.raises(MP4ValidationError, match="Codec audio"):
+        validate_mp4(path)
+
+
+def test_copy_mp4_refuses_identical_input_output(conforming_clip):
+    with pytest.raises(ValueError, match="identiques"):
+        copy_mp4_atomically(conforming_clip, conforming_clip)
+
+
+def test_atomic_ffmpeg_uses_temp_before_replace(monkeypatch, tmp_path):
+    destination = tmp_path / "folder with spaces" / "out.mp4"
+    destination.parent.mkdir()
+    seen = {}
+
+    def fake_run(args, timeout=None):
+        temp_path = Path(args[-1])
+        seen["temp"] = temp_path
+        assert ".rendering-" in temp_path.name
+        assert temp_path != destination
+        temp_path.write_bytes(b"new")
+
+    monkeypatch.setattr(ffmpeg_utils, "run_ffmpeg", fake_run)
+    run_ffmpeg_atomic(["-i", "in.mp4"], destination, validate=False)
+
+    assert destination.read_bytes() == b"new"
+    assert not seen["temp"].exists()
+
+
+def test_atomic_ffmpeg_keeps_old_render_and_removes_temp_on_failure(monkeypatch, tmp_path):
+    destination = tmp_path / "out.mp4"
+    destination.write_bytes(b"old")
+    seen = {}
+
+    def fake_run(args, timeout=None):
+        temp_path = Path(args[-1])
+        seen["temp"] = temp_path
+        temp_path.write_bytes(b"bad")
+
+    def invalid(*args, **kwargs):
+        raise MP4ValidationError("bad mp4")
+
+    monkeypatch.setattr(ffmpeg_utils, "run_ffmpeg", fake_run)
+    monkeypatch.setattr(ffmpeg_utils, "validate_mp4", invalid)
+
+    with pytest.raises(MP4ValidationError):
+        run_ffmpeg_atomic(["-i", "in.mp4"], destination)
+
+    assert destination.read_bytes() == b"old"
+    assert not seen["temp"].exists()
+
+
+def test_render_lock_blocks_simultaneous_same_clip(tmp_path):
+    destination = tmp_path / "final.mp4"
+    with ffmpeg_utils.mp4_render_lock(destination):
+        with pytest.raises(RuntimeError, match="deja en cours"):
+            with ffmpeg_utils.mp4_render_lock(destination):
+                pass
+
+
 def test_export_ffmpeg_failure_falls_back(monkeypatch, nonconforming_clip, tmp_path):
     """Echec du reencodage -> copie du final tel quel, erreur tracee."""
     from src.utils.ffmpeg import FFmpegError
 
     def failing(*args, **kwargs):
         raise FFmpegError("echec simule")
-    monkeypatch.setattr("src.export.platforms.run_ffmpeg", failing)
+    monkeypatch.setattr("src.export.platforms.run_ffmpeg_atomic", failing)
 
     destination = tmp_path / "out.mp4"
     profile = load_export_profiles()["tiktok"]
