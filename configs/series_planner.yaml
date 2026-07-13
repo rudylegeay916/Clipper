@@ -1,0 +1,22 @@
+series_planner:
+  default_mode: off
+  default_parts: 3
+  limits:
+    min_parts: 2
+    max_parts: 10
+  duration:
+    mode: standard
+    short_seconds: 35
+    standard_seconds: 55
+    long_seconds: 90
+    custom_seconds: null
+  continuity:
+    max_episode_overlap_ratio: 0.12
+    max_repeated_text_ratio: 0.35
+    max_reminder_ratio: 0.12
+  quality:
+    max_black_inside_seconds: 0.35
+    min_episode_duration_seconds: 6.0
+  scoring:
+    min_auto_series_score: 60.0
+    min_forced_series_score: 35.0

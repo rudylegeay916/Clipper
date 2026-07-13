@@ -19,6 +19,12 @@ ui:
     music: auto
     language: auto
     popularity_mode: auto
+    story_mode: auto
+    story_max_segments: 4
+    series_mode: off
+    series_parts: 3
+    series_duration: standard
+    series_custom_duration: 60
     resume: true
     force: false
     skip_preview: false

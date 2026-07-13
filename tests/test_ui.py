@@ -127,6 +127,9 @@ def test_build_pipeline_command_uses_sys_executable_and_options():
             "popularity_mode": "popular",
             "story_mode": "multi_scene",
             "story_max_segments": 4,
+            "series_mode": "forced",
+            "series_parts": 3,
+            "series_duration": "standard",
             "resume": True,
             "force": False,
             "skip_preview": True,
@@ -142,6 +145,9 @@ def test_build_pipeline_command_uses_sys_executable_and_options():
     assert "popular" in command
     assert command[command.index("--story-mode") + 1] == "multi_scene"
     assert command[command.index("--story-max-segments") + 1] == "4"
+    assert command[command.index("--series-mode") + 1] == "forced"
+    assert command[command.index("--series-parts") + 1] == "3"
+    assert command[command.index("--series-duration") + 1] == "standard"
 
 
 @pytest.mark.parametrize("label,mode", [

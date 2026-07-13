@@ -116,6 +116,47 @@ def _options_form(ui_config: dict) -> tuple[dict, str]:
             [2, 3, 4, 5, 6],
             index=[2, 3, 4, 5, 6].index(int(defaults.get("story_max_segments", 4))),
         )
+        series_labels = {
+            "Desactive": "off",
+            "Auto": "auto",
+            "Force": "forced",
+        }
+        current_series_mode = defaults.get("series_mode", "off")
+        series_label = st.selectbox(
+            "Mode serie",
+            list(series_labels.keys()),
+            index=list(series_labels.values()).index(
+                current_series_mode if current_series_mode in series_labels.values() else "off"
+            ),
+        )
+        defaults["series_mode"] = series_labels[series_label]
+        defaults["series_parts"] = st.selectbox(
+            "Nombre de parties souhaite",
+            list(range(2, 11)),
+            index=list(range(2, 11)).index(int(defaults.get("series_parts", 3))),
+        )
+        duration_labels = {
+            "courte": "short",
+            "standard": "standard",
+            "longue": "long",
+            "personnalisee": "custom",
+        }
+        current_duration = defaults.get("series_duration", "standard")
+        duration_label = st.selectbox(
+            "Duree cible par partie",
+            list(duration_labels.keys()),
+            index=list(duration_labels.values()).index(
+                current_duration if current_duration in duration_labels.values() else "standard"
+            ),
+        )
+        defaults["series_duration"] = duration_labels[duration_label]
+        if defaults["series_duration"] == "custom":
+            defaults["series_custom_duration"] = st.number_input(
+                "Duree personnalisee par partie (s)",
+                min_value=10,
+                max_value=300,
+                value=int(defaults.get("series_custom_duration", 60)),
+            )
         popularity_labels = jobs.POPULARITY_MODE_LABELS
         current_popularity = defaults.get("popularity_mode", "auto")
         popularity_index = list(popularity_labels.values()).index(
@@ -311,6 +352,28 @@ def render_results(job: dict) -> None:
             file_name=zip_path.name,
             mime="application/zip",
         )
+    series_clips = [clip for clip in clips if clip.get("series_created")]
+    if series_clips:
+        first_series = series_clips[0]
+        st.info(
+            f"Serie detectee : {first_series.get('series_total_parts')} partie(s), "
+            f"ordre {first_series.get('series_publication_order')}"
+        )
+        if st.button("Regenerer toute la serie", key="series_rerender_all"):
+            try:
+                options = dict(job.get("options", {}))
+                options["from_stage"] = "series_planning"
+                options["to_stage"] = "export"
+                options["force"] = True
+                repair_job = jobs.create_repair_rerender_job(
+                    job, output_dir, first_series["rank"], "series_planning", options)
+                repair_job["command"] = jobs.build_pipeline_command(
+                    output_dir / "metadata.json", options)
+                jobs.save_job(repair_job)
+                jobs.start_hook_rerender_job(repair_job)
+                st.rerun()
+            except (ValueError, FileNotFoundError) as error:
+                st.error(str(error))
 
     for clip in clips:
         with st.container(border=True):
@@ -345,6 +408,27 @@ def render_results(job: dict) -> None:
                 st.write(f"Mode de montage : {clip.get('assembly_mode', 'contiguous')}")
                 if clip.get("story_plan_score") is not None:
                     st.write(f"Score storyboard : {clip.get('story_plan_score')}")
+                if clip.get("series_created") and clip.get("series_part_number"):
+                    with st.expander("Serie"):
+                        st.write(
+                            f"Partie {clip.get('series_part_number')}/"
+                            f"{clip.get('series_total_parts')} - "
+                            f"{clip.get('series_episode_role')}"
+                        )
+                        st.write(f"Titre : {clip.get('series_episode_title')}")
+                        st.write(f"Ordre de publication : {clip.get('series_publication_order')}")
+                        if clip.get("series_cliffhanger"):
+                            st.write(f"Cliffhanger : {clip.get('series_cliffhanger')}")
+                        if st.button("Regenerer cette partie", key=f"series_part_rerender_{clip['rank']}"):
+                            try:
+                                rerender_job = jobs.create_repair_rerender_job(
+                                    job, output_dir, clip["rank"], "cutting",
+                                    job.get("options", {}),
+                                )
+                                jobs.start_hook_rerender_job(rerender_job)
+                                st.rerun()
+                            except (ValueError, FileNotFoundError) as error:
+                                st.error(str(error))
                 if clip.get("story_segments"):
                     with st.expander("Segments source du montage"):
                         for segment in clip["story_segments"]:

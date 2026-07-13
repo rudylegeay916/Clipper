@@ -44,6 +44,7 @@ PIPELINE_STAGE_LABELS = [
     ("source_popularity", "Popularite source"),
     ("scoring", "Scoring"),
     ("story_planning", "Story planning"),
+    ("series_planning", "Series planning"),
     ("cutting", "Decoupage"),
     ("reframe", "Reframe vertical"),
     ("speech_decision", "Decision sous-titres"),
@@ -65,6 +66,7 @@ USER_STAGE_LABELS = {
     "source_popularity": "Signaux de popularite",
     "scoring": "Classement des moments",
     "story_planning": "Plan de montage",
+    "series_planning": "Plan de serie",
     "cutting": "Decoupage",
     "reframe": "Adaptation verticale",
     "speech_decision": "Decision sous-titres",
@@ -166,6 +168,10 @@ def build_pipeline_command(source: str | Path, options: dict) -> list[str]:
     add("--language", options.get("language", "auto"))
     add("--story-mode", options.get("story_mode", "auto"))
     add("--story-max-segments", options.get("story_max_segments"))
+    add("--series-mode", options.get("series_mode", "off"))
+    add("--series-parts", options.get("series_parts"))
+    add("--series-duration", options.get("series_duration", "standard"))
+    add("--series-custom-duration", options.get("series_custom_duration"))
     popularity_mode = options.get("popularity_mode", "auto")
     if popularity_mode:
         command.extend(["--popularity-mode", str(popularity_mode)])
@@ -208,6 +214,14 @@ def build_hook_rerender_command(metadata_path: str | Path, rank: int,
         ("--language", "language"),
         ("--story-mode", "story_mode"),
         ("--story-max-segments", "story_max_segments"),
+        ("--series-mode", "series_mode"),
+        ("--series-parts", "series_parts"),
+        ("--series-duration", "series_duration"),
+        ("--series-custom-duration", "series_custom_duration"),
+        ("--series-mode", "series_mode"),
+        ("--series-parts", "series_parts"),
+        ("--series-duration", "series_duration"),
+        ("--series-custom-duration", "series_custom_duration"),
     ):
         value = opts.get(key)
         if value and value != "auto":
@@ -275,6 +289,12 @@ def build_repair_rerender_command(metadata_path: str | Path, rank: int, from_sta
         ("--template", "template"),
         ("--music", "music"),
         ("--language", "language"),
+        ("--story-mode", "story_mode"),
+        ("--story-max-segments", "story_max_segments"),
+        ("--series-mode", "series_mode"),
+        ("--series-parts", "series_parts"),
+        ("--series-duration", "series_duration"),
+        ("--series-custom-duration", "series_custom_duration"),
     ):
         value = opts.get(key)
         if value and value != "auto":

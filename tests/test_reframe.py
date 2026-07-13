@@ -15,6 +15,7 @@ import json
 import pytest
 
 from src.reframe.vertical import (
+    _merge_rank_entries as merge_reframe_rank_entries,
     build_camera_trajectory,
     build_vertical_preview_html,
     classify_aspect,
@@ -592,3 +593,19 @@ def test_reframe_clips_manifest_and_preview(fake_output_dir):
     gallery = (vertical_dir / "preview.html").read_text(encoding="utf-8")
     assert "<video" in gallery
     assert "Titre test" in gallery
+
+
+def test_reframe_rank_merge_preserves_other_ranks():
+    existing = [
+        {"rank": 1, "vertical_file": "old_rank_1.mp4"},
+        {"rank": 2, "vertical_file": "rank_2.mp4"},
+        {"rank": 3, "vertical_file": "rank_3.mp4"},
+    ]
+    updated = [{"rank": 1, "vertical_file": "new_rank_1.mp4"}]
+
+    merged = merge_reframe_rank_entries(existing, updated, replaced_rank=1)
+
+    assert [clip["rank"] for clip in merged] == [1, 2, 3]
+    assert merged[0]["vertical_file"] == "new_rank_1.mp4"
+    assert merged[1]["vertical_file"] == "rank_2.mp4"
+    assert merged[2]["vertical_file"] == "rank_3.mp4"
