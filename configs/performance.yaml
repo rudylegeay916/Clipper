@@ -1,0 +1,16 @@
+performance:
+  storage_path: data/performance/performance_db.json
+  score_weights:
+    engagement_rate: 28
+    share_rate: 18
+    save_rate: 14
+    completion_rate: 14
+    avg_watch_ratio: 12
+    view_velocity_per_day: 8
+    follower_conversion_rate: 6
+  minimum_posts_for_insights: 2
+  tracked_platforms:
+    - tiktok
+    - youtube_shorts
+    - instagram_reels
+    - other

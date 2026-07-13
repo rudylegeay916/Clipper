@@ -24,6 +24,9 @@ output/*
 !output/.gitkeep
 cache/*
 !cache/.gitkeep
+data/performance/*.json
+data/performance/*.tmp
+data/performance/*.corrupt-*.json
 samples/*
 !samples/.gitkeep
 assets/music/*
