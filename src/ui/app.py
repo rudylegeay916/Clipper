@@ -44,6 +44,72 @@ def _read_log(job: dict, limit: int = 20000) -> str:
     return text[-limit:]
 
 
+def _open_local_path(path: str | Path) -> None:
+    target = Path(path)
+    if not target.exists():
+        st.warning(f"Chemin introuvable : {target}")
+        return
+    try:
+        os.startfile(str(target))  # type: ignore[attr-defined]
+    except Exception:
+        st.info(f"Ouvrez ce chemin manuellement : {target}")
+
+
+def _technical_details(label: str, payload) -> None:
+    with st.expander(label):
+        st.write(payload)
+
+
+def _copy_text_button(label: str, text: str, key: str) -> None:
+    if st.button(label, key=key):
+        st.code(text or "", language="text")
+
+
+def _render_publication_checklist(clip: dict) -> None:
+    checklist = clip.get("publication_checklist") or {}
+    status = checklist.get("status", "A verifier")
+    if status == "Pret a publier":
+        st.success("Checklist avant publication : Pret a publier")
+    elif status == "A regenerer":
+        st.error("Checklist avant publication : A regenerer")
+    else:
+        st.warning("Checklist avant publication : A verifier")
+    with st.expander("Voir la checklist"):
+        for check in checklist.get("checks", []):
+            marker = "OK" if check.get("ok") else "A verifier"
+            st.write(f"{marker} - {check.get('label')}")
+            if check.get("message"):
+                st.caption(check["message"])
+
+
+def _render_exports(clip: dict) -> None:
+    exports = clip.get("exports_by_platform") or []
+    if not exports:
+        st.caption("Aucun export plateforme pour ce clip.")
+        return
+    with st.expander("Exports plateformes"):
+        for export in exports:
+            st.write(
+                f"{export.get('platform_label')} - {export.get('file')} "
+                f"({export.get('status')})"
+            )
+            st.caption(
+                f"Duree : {export.get('duration') or '-'}s | "
+                f"Taille : {export.get('size_bytes') or '-'} octets"
+            )
+            col_file, col_folder = st.columns(2)
+            if col_file.button(
+                f"Ouvrir fichier {export.get('platform_label')}",
+                key=f"open_export_file_{clip['rank']}_{export.get('platform')}",
+            ):
+                _open_local_path(export.get("path", ""))
+            if col_folder.button(
+                f"Ouvrir dossier {export.get('platform_label')}",
+                key=f"open_export_folder_{clip['rank']}_{export.get('platform')}",
+            ):
+                _open_local_path(export.get("folder", ""))
+
+
 def _source_form(ui_config: dict) -> tuple[str | Path | None, str, str]:
     source_mode = st.radio("Source", ["Fichier video", "URL"], horizontal=True)
     if source_mode == "Fichier video":
@@ -66,11 +132,9 @@ def _options_form(ui_config: dict) -> tuple[dict, str]:
 
     col1, col2 = st.columns(2)
     with col1:
-        defaults["top"] = st.number_input("Nombre de clips", 1, 20, int(defaults["top"]))
-        defaults["clip_profile"] = st.selectbox(
-            "Profil de clip", ["auto", "performance", "monetization", "both"])
+        defaults["top"] = st.number_input("Nombre de clips souhaites", 1, 20, int(defaults["top"]))
         platform_choice = st.selectbox(
-            "Plateformes",
+            "Plateformes ciblees",
             ["Toutes", "TikTok", "Instagram Reels", "YouTube Shorts"],
         )
         defaults["platform"] = {
@@ -79,28 +143,10 @@ def _options_form(ui_config: dict) -> tuple[dict, str]:
             "Instagram Reels": "reels",
             "YouTube Shorts": "shorts",
         }[platform_choice]
-    with col2:
-        language = campaigns.campaign_language(campaign_profile)
-        defaults["language"] = st.selectbox(
-            "Langue",
-            ["auto", "fr", "en"],
-            index=["auto", "fr", "en"].index(language if language in {"auto", "fr", "en"} else "auto"),
-            disabled=language != "auto",
-        )
-        st.caption("Parcours : Importer -> Configurer -> Creer les clips -> Telecharger")
-
-    with st.expander("Reglages avances"):
-        defaults["reframe_method"] = st.selectbox("reframe-method", ["auto", "face", "center"])
-        defaults["stability"] = st.selectbox("stability", ["stable", "balanced", "follow"])
-        defaults["subtitles"] = st.selectbox("subtitles", ["auto", "always", "never"])
-        defaults["subtitle_style"] = st.text_input("subtitle-style", defaults["subtitle_style"])
-        defaults["template"] = st.selectbox(
-            "template", ["creative_social", "clean_social", "punchy_short"])
-        defaults["music"] = _music_selector(defaults["music"])
         story_labels = {
-            "Automatique": "auto",
+            "Auto": "auto",
             "Sequence continue": "contiguous",
-            "Montage multi-scenes": "multi_scene",
+            "Multi-scenes": "multi_scene",
         }
         current_story_mode = defaults.get("story_mode", "auto")
         story_label = st.selectbox(
@@ -111,10 +157,13 @@ def _options_form(ui_config: dict) -> tuple[dict, str]:
             ),
         )
         defaults["story_mode"] = story_labels[story_label]
-        defaults["story_max_segments"] = st.selectbox(
-            "Nombre maximal de segments par clip",
-            [2, 3, 4, 5, 6],
-            index=[2, 3, 4, 5, 6].index(int(defaults.get("story_max_segments", 4))),
+    with col2:
+        language = campaigns.campaign_language(campaign_profile)
+        defaults["language"] = st.selectbox(
+            "Langue",
+            ["auto", "fr", "en"],
+            index=["auto", "fr", "en"].index(language if language in {"auto", "fr", "en"} else "auto"),
+            disabled=language != "auto",
         )
         series_labels = {
             "Desactive": "off",
@@ -130,10 +179,29 @@ def _options_form(ui_config: dict) -> tuple[dict, str]:
             ),
         )
         defaults["series_mode"] = series_labels[series_label]
-        defaults["series_parts"] = st.selectbox(
-            "Nombre de parties souhaite",
-            list(range(2, 11)),
-            index=list(range(2, 11)).index(int(defaults.get("series_parts", 3))),
+        defaults["series_parts"] = st.number_input(
+            "Nombre de parties souhaitees",
+            2,
+            10,
+            int(defaults.get("series_parts", 3)),
+            disabled=defaults["series_mode"] == "off",
+        )
+        st.caption("Parcours : importer -> creer les clips -> verifier -> exporter")
+
+    with st.expander("Reglages avances"):
+        defaults["clip_profile"] = st.selectbox(
+            "Profil de clip", ["auto", "performance", "monetization", "both"])
+        defaults["reframe_method"] = st.selectbox("reframe-method", ["auto", "face", "center"])
+        defaults["stability"] = st.selectbox("stability", ["stable", "balanced", "follow"])
+        defaults["subtitles"] = st.selectbox("subtitles", ["auto", "always", "never"])
+        defaults["subtitle_style"] = st.text_input("subtitle-style", defaults["subtitle_style"])
+        defaults["template"] = st.selectbox(
+            "template", ["creative_social", "clean_social", "punchy_short"])
+        defaults["music"] = _music_selector(defaults["music"])
+        defaults["story_max_segments"] = st.selectbox(
+            "Nombre maximal de segments par clip",
+            [2, 3, 4, 5, 6],
+            index=[2, 3, 4, 5, 6].index(int(defaults.get("story_max_segments", 4))),
         )
         duration_labels = {
             "courte": "short",
@@ -315,7 +383,7 @@ def render_job_progress(job: dict) -> None:
     if progress.get("warnings"):
         st.warning("\n".join(progress["warnings"]))
     if job.get("error"):
-        st.error(job["error"])
+        st.error(results.friendly_error_message(job["error"]) or job["error"])
 
     actions = st.columns(3)
     if actions[0].button("Actualiser", key=f"refresh_{job['job_id']}"):
@@ -323,7 +391,7 @@ def render_job_progress(job: dict) -> None:
     if job.get("status") == "failed" and actions[1].button("Reprendre", key=f"resume_{job['job_id']}"):
         jobs.resume_failed_job(job)
         st.rerun()
-    with st.expander("Afficher les logs"):
+    with st.expander("Afficher les details techniques"):
         st.code(_read_log(job), language="text")
 
     if job.get("status") == "running":
@@ -342,6 +410,7 @@ def render_results(job: dict) -> None:
         return
 
     st.markdown("### Resultats")
+    st.caption("Verifiez les videos, les textes et les exports avant publication.")
     zip_path = None
     if st.button("Telecharger tous les clips en ZIP"):
         zip_path = results.create_download_zip(output_dir, job.get("project_name", output_dir.name))
@@ -356,9 +425,18 @@ def render_results(job: dict) -> None:
     if series_clips:
         first_series = series_clips[0]
         st.info(
-            f"Serie detectee : {first_series.get('series_total_parts')} partie(s), "
-            f"ordre {first_series.get('series_publication_order')}"
+            f"Serie detectee : {first_series.get('series_total_parts')} partie(s)."
         )
+        with st.expander("Voir la serie"):
+            for part in sorted(series_clips, key=lambda item: item.get("series_part_number") or 0):
+                st.write(
+                    f"Partie {part.get('series_part_number')}/"
+                    f"{part.get('series_total_parts')} - "
+                    f"{part.get('series_episode_role') or '-'}"
+                )
+                st.caption(part.get("selected_hook") or part.get("series_episode_title") or "")
+                if part.get("series_cliffhanger"):
+                    st.caption(f"Cliffhanger : {part.get('series_cliffhanger')}")
         if st.button("Regenerer toute la serie", key="series_rerender_all"):
             try:
                 options = dict(job.get("options", {}))
@@ -401,13 +479,38 @@ def render_results(job: dict) -> None:
                     except (ValueError, FileNotFoundError) as error:
                         cols[0].error(str(error))
             with cols[1]:
-                st.markdown(f"#### Clip #{clip['rank']} - {clip.get('duration', '-')}s")
-                st.write(f"Profil : {clip.get('profile')}")
-                st.write(f"Score creatif : {clip.get('creative_score', '-')}")
-                st.write(f"Score de visibilite : {clip.get('visibility_score', '-')}")
-                st.write(f"Mode de montage : {clip.get('assembly_mode', 'contiguous')}")
+                title = clip.get("title") or f"Clip {clip['rank']}"
+                st.markdown(f"#### {title}")
+                st.write(f"Plateforme : {clip.get('recommended_platform', '-')}")
+                st.write(f"Score : {clip.get('visibility_score') or clip.get('creative_score') or '-'}")
+                st.write(f"Type de montage : {clip.get('assembly_label')}")
+                _render_publication_checklist(clip)
+                _render_exports(clip)
+                action_cols = st.columns(3)
+                if action_cols[0].button("Ouvrir dossier", key=f"open_final_folder_{clip['rank']}"):
+                    _open_local_path(Path(clip["final_path"]).parent)
+                if action_cols[1].button("Regenerer ce clip", key=f"rerender_clip_{clip['rank']}"):
+                    try:
+                        rerender_job = jobs.create_repair_rerender_job(
+                            job, output_dir, clip["rank"], "templates",
+                            job.get("options", {}),
+                        )
+                        jobs.start_hook_rerender_job(rerender_job)
+                        st.rerun()
+                    except (ValueError, FileNotFoundError) as error:
+                        st.error(str(error))
+                _copy_text_button(
+                    "Copier description",
+                    clip.get("description") or "",
+                    key=f"copy_description_{clip['rank']}",
+                )
+                _copy_text_button(
+                    "Copier hashtags",
+                    " ".join(clip.get("hashtags", [])),
+                    key=f"copy_hashtags_{clip['rank']}",
+                )
                 if clip.get("story_plan_score") is not None:
-                    st.write(f"Score storyboard : {clip.get('story_plan_score')}")
+                    st.caption(f"Score storyboard : {clip.get('story_plan_score')}")
                 if clip.get("series_created") and clip.get("series_part_number"):
                     with st.expander("Serie"):
                         st.write(
@@ -419,6 +522,16 @@ def render_results(job: dict) -> None:
                         st.write(f"Ordre de publication : {clip.get('series_publication_order')}")
                         if clip.get("series_cliffhanger"):
                             st.write(f"Cliffhanger : {clip.get('series_cliffhanger')}")
+                        st.write(f"Hook : {clip.get('selected_hook') or '-'}")
+                        _copy_text_button(
+                            "Copier post",
+                            "\n".join([
+                                clip.get("title") or "",
+                                clip.get("description") or "",
+                                " ".join(clip.get("hashtags", [])),
+                            ]),
+                            key=f"copy_series_post_{clip['rank']}",
+                        )
                         if st.button("Regenerer cette partie", key=f"series_part_rerender_{clip['rank']}"):
                             try:
                                 rerender_job = jobs.create_repair_rerender_job(
@@ -516,6 +629,12 @@ def render_results(job: dict) -> None:
                 st.write("Decision de sous-titres :", clip.get("subtitle_decision") or "-")
                 if clip.get("warnings"):
                     st.warning("\n".join(str(w) for w in clip["warnings"]))
+                with st.expander("Details techniques"):
+                    st.write(f"rank : {clip['rank']}")
+                    st.write(f"etat interne : {clip.get('result_state')}")
+                    st.write(f"stage de reparation : {clip.get('repair_stage')}")
+                    st.write(f"mode brut : {clip.get('assembly_mode')}")
+                    st.write(f"exports : {clip.get('exports')}")
 
 
 def _storyboard_rows(segments: list[dict]) -> list[dict]:
@@ -668,17 +787,22 @@ def page_projects() -> None:
         return
     for item in history:
         with st.container(border=True):
+            readable = projects.readable_project_status(item)
             cols = st.columns([1, 3])
             if item.get("thumbnail"):
                 cols[0].image(item["thumbnail"])
             cols[1].markdown(f"### {item['name']}")
             cols[1].write(f"Source : {item.get('source')}")
             cols[1].write(
-                f"Date : {item.get('date')} | Statut : {item.get('status')} | "
-                f"Mode : {item.get('mode') or '-'} | Clips : {item.get('clip_count') or '-'} | "
+                f"Date : {item.get('date')} | Statut : {readable['label']} | "
+                f"Mode : {item.get('mode') or '-'} | "
+                f"Clips valides : {item.get('valid_clip_count') or 0} | "
+                f"Exports : {item.get('export_count') or 0} | "
                 f"Meilleure visibilite : {item.get('best_visibility') or '-'} | "
-                f"Campagne : {item.get('campaign')}"
+                f"Duree : {_human_duration(item.get('duration_seconds'))}"
             )
+            cols[1].caption(readable["message"])
+            cols[1].caption(f"Derniere action conseillee : {readable['next_action']}")
             a, b, c, d = cols[1].columns(4)
             if a.button("Ouvrir", key=f"open_project_{item['job_id']}"):
                 open_project(item["job_id"], item.get("output_dir"), item["job_id"])
@@ -724,7 +848,28 @@ def render_project_detail() -> None:
 
     st.markdown(f"### Projet : {job.get('project_name', job.get('job_id'))}")
     st.write(f"Source : {job.get('source') or '-'}")
-    st.write(f"Statut : {job.get('status') or '-'}")
+    project_summary = {
+        "status": job.get("status"),
+        "valid_clip_count": 0,
+        "export_count": 0,
+        "series_parts": None,
+    }
+    if output_dir.is_dir():
+        try:
+            clips = results.detect_results(output_dir, job.get("campaign_profile", "default"))
+            project_summary["valid_clip_count"] = len([
+                clip for clip in clips if clip.get("result_state") == "ready"
+            ])
+            project_summary["export_count"] = sum(len(clip.get("exports", [])) for clip in clips)
+            series_parts = [
+                clip.get("series_total_parts") for clip in clips if clip.get("series_created")
+            ]
+            project_summary["series_parts"] = series_parts[0] if series_parts else None
+        except Exception:
+            pass
+    readable = projects.readable_project_status(project_summary)
+    st.write(f"Statut : {readable['label']}")
+    st.caption(readable["message"])
 
     if job.get("status") in {"pending", "running"}:
         render_job_progress(job)
@@ -747,7 +892,7 @@ def render_project_detail() -> None:
 
 
 def page_settings() -> None:
-    st.title("Parametres")
+    st.title("Reglages avances")
     st.write("Python :", shutil.which("python") or "introuvable")
     st.write("FFmpeg :", shutil.which("ffmpeg") or "introuvable")
     st.write("Dossier jobs :", jobs.JOBS_DIR)
@@ -790,32 +935,32 @@ def page_settings() -> None:
             st.info("Aucun token YouTube local a supprimer.")
         st.rerun()
     st.write("Kick popularity : unsupported sans scraping prive")
-    st.json(jobs.load_ui_config())
+    with st.expander("Afficher les details techniques"):
+        st.json(jobs.load_ui_config())
 
 
-def page_about() -> None:
-    st.title("A propos")
-    st.write(
-        "Otherme Clipper est une interface locale. Elle ne publie rien "
-        "automatiquement et ne deploie aucun service cloud."
-    )
-    st.code("streamlit run src/ui/app.py", language="bash")
+def page_results() -> None:
+    st.title("Resultats")
+    if st.session_state.get("selected_project_dir"):
+        render_project_detail()
+        return
+    st.info("Choisissez un projet dans Mes projets, puis cliquez sur Ouvrir.")
 
 
 def main() -> None:
     _init_state()
     page = st.sidebar.radio(
         "Navigation",
-        ["Nouveau projet", "Mes projets", "Parametres", "A propos"],
+        ["Nouveau projet", "Mes projets", "Resultats", "Reglages avances"],
     )
     if page == "Nouveau projet":
         page_new_project()
     elif page == "Mes projets":
         page_projects()
-    elif page == "Parametres":
-        page_settings()
+    elif page == "Resultats":
+        page_results()
     else:
-        page_about()
+        page_settings()
 
 
 if __name__ == "__main__":

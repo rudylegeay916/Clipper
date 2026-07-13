@@ -218,10 +218,6 @@ def build_hook_rerender_command(metadata_path: str | Path, rank: int,
         ("--series-parts", "series_parts"),
         ("--series-duration", "series_duration"),
         ("--series-custom-duration", "series_custom_duration"),
-        ("--series-mode", "series_mode"),
-        ("--series-parts", "series_parts"),
-        ("--series-duration", "series_duration"),
-        ("--series-custom-duration", "series_custom_duration"),
     ):
         value = opts.get(key)
         if value and value != "auto":
@@ -253,6 +249,10 @@ def build_timing_rerender_command(metadata_path: str | Path, rank: int,
         ("--language", "language"),
         ("--story-mode", "story_mode"),
         ("--story-max-segments", "story_max_segments"),
+        ("--series-mode", "series_mode"),
+        ("--series-parts", "series_parts"),
+        ("--series-duration", "series_duration"),
+        ("--series-custom-duration", "series_custom_duration"),
     ):
         value = opts.get(key)
         if value and value != "auto":
