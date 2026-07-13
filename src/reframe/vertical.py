@@ -779,11 +779,11 @@ def build_vertical_preview_html(manifest: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def _merge_rank_entries(existing: list[dict], updated: list[dict],
-                        allowed_ranks: set[int] | None = None) -> list[dict]:
+                        replaced_rank: int | None = None) -> list[dict]:
     by_rank = {
         int(item["rank"]): item
         for item in existing
-        if "rank" in item and (allowed_ranks is None or int(item["rank"]) in allowed_ranks)
+        if "rank" in item and int(item["rank"]) != replaced_rank
     }
     for item in updated:
         by_rank[int(item["rank"])] = item
@@ -906,9 +906,8 @@ def reframe_clips(source: str, force: bool = False, method: str | None = None,
 
     # --- Manifest + galerie ---
     if rank and existing_manifest:
-        active_ranks = {int(clip["rank"]) for clip in clips}
         vertical_clips = _merge_rank_entries(
-            existing_manifest.get("clips", []), vertical_clips, active_ranks)
+            existing_manifest.get("clips", []), vertical_clips, int(rank))
     manifest = {
         "source": clips_manifest["source"],
         "vertical_dir": str(vertical_dir),

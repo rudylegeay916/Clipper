@@ -1,4 +1,4 @@
-"""
+﻿"""
 Phase 13 - Pipeline complet : de la video source aux exports publiables.
 
 Enchaine les 12 etapes du projet en appelant les modules existants
@@ -48,7 +48,7 @@ STAGES = [
      "outputs": ["preview.html"]},
     {"id": "transcription", "label": "Transcription",          "essential": True,
      "outputs": ["transcript.json"]},
-    {"id": "creative_routing", "label": "Routage créatif",     "essential": True,
+    {"id": "creative_routing", "label": "Routage crÃ©atif",     "essential": True,
      "outputs": ["creative_manifest.json"]},
     {"id": "detection",     "label": "Silences / coupes",      "essential": False,
      "outputs": ["analysis.json"]},
@@ -56,23 +56,25 @@ STAGES = [
      "outputs": ["source_popularity_manifest.json"]},
     {"id": "scoring",       "label": "Scoring moments forts",  "essential": True,
      "outputs": ["candidates.json"]},
-    {"id": "cutting",       "label": "Découpage",              "essential": True,
+    {"id": "story_planning", "label": "Story planning",        "essential": True,
+     "outputs": ["story_plan_manifest.json"]},
+    {"id": "cutting",       "label": "DÃ©coupage",              "essential": True,
      "outputs": ["clips_manifest.json"]},
     {"id": "reframe",       "label": "Reframe vertical",       "essential": False,
      "outputs": ["vertical_manifest.json"]},
-    {"id": "speech_decision", "label": "Détection de parole",  "essential": False,
+    {"id": "speech_decision", "label": "DÃ©tection de parole",  "essential": False,
      "outputs": [".creative/speech.done"]},
     {"id": "subtitles",     "label": "Sous-titres (conditionnels)", "essential": False,
      "outputs": ["subtitles_manifest.json"]},
-    {"id": "creative_hooks", "label": "Hooks créatifs",        "essential": False,
+    {"id": "creative_hooks", "label": "Hooks crÃ©atifs",        "essential": False,
      "outputs": [".creative/hooks.done"]},
     {"id": "templates",     "label": "Template de montage",    "essential": False,
      "outputs": ["final_manifest.json"]},
     {"id": "creative_music", "label": "Musique adaptative",    "essential": False,
      "outputs": [".creative/music.done"]},
-    {"id": "metadata",      "label": "Métadonnées de post",    "essential": False,
+    {"id": "metadata",      "label": "MÃ©tadonnÃ©es de post",    "essential": False,
      "outputs": ["metadata_posts.json"]},
-    {"id": "visibility",    "label": "Score de visibilité",    "essential": False,
+    {"id": "visibility",    "label": "Score de visibilitÃ©",    "essential": False,
      "outputs": ["visibility_report.json"]},
     {"id": "export",        "label": "Export plateformes",     "essential": False,
      "outputs": ["exports/export_manifest.json"]},
@@ -120,6 +122,19 @@ def _run_scoring(ctx):
     return score_video(str(ctx["metadata_path"]), force=ctx["force"],
                        top=ctx["options"].get("top"),
                        popularity_mode=ctx["options"].get("popularity_mode"))
+
+
+def _run_story_planning(ctx):
+    from src.storyboard.planner import plan_storyboards
+    return plan_storyboards(
+        ctx["metadata_path"],
+        force=ctx["force"],
+        top=ctx["options"].get("top"),
+        rank=ctx["options"].get("rank"),
+        mode=ctx["options"].get("story_mode"),
+        max_segments=ctx["options"].get("story_max_segments"),
+        platform=ctx["options"].get("platform", "recommended"),
+    )
 
 
 def _run_creative_routing(ctx):
@@ -202,7 +217,8 @@ RUNNERS = {
     "creative_routing": _run_creative_routing,
     "detection": _run_detection,
     "source_popularity": _run_source_popularity,
-    "scoring": _run_scoring, "cutting": _run_cutting,
+    "scoring": _run_scoring, "story_planning": _run_story_planning,
+    "cutting": _run_cutting,
     "reframe": _run_reframe,
     "speech_decision": _run_speech_decision,
     "subtitles": _run_subtitles,
@@ -356,12 +372,12 @@ def _add_source_popularity_details(output_dir: Path, entry: dict) -> None:
 def build_pipeline_preview_html(output_dir: Path, manifest: dict) -> str:
     links = [
         ("Preview source", "preview.html"),
-        ("Clips découpés", "clips/preview.html"),
+        ("Clips dÃ©coupÃ©s", "clips/preview.html"),
         ("Clips verticaux", "vertical/preview.html"),
-        ("Clips sous-titrés", "subtitled/preview.html"),
+        ("Clips sous-titrÃ©s", "subtitled/preview.html"),
         ("Clips finaux", "final/preview.html"),
         ("Posts (titres/hashtags)", "posts/preview.html"),
-        ("Scores de visibilité", "visibility/preview.html"),
+        ("Scores de visibilitÃ©", "visibility/preview.html"),
         ("Exports TikTok/Reels/Shorts", "exports/preview.html"),
     ]
     items = []
@@ -369,7 +385,7 @@ def build_pipeline_preview_html(output_dir: Path, manifest: dict) -> str:
         if (output_dir / rel).is_file():
             items.append(f'<li><a href="{rel}">{html.escape(label)}</a></li>')
         else:
-            items.append(f'<li class="off">{html.escape(label)} (non généré)</li>')
+            items.append(f'<li class="off">{html.escape(label)} (non gÃ©nÃ©rÃ©)</li>')
 
     rows = "".join(
         f"<tr><td>{html.escape(s['label'])}</td><td class='s-{s['status']}'>"
@@ -382,7 +398,7 @@ def build_pipeline_preview_html(output_dir: Path, manifest: dict) -> str:
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Pipeline — {html.escape(manifest['source'])}</title>
+  <title>Pipeline â€” {html.escape(manifest['source'])}</title>
   <style>
     body {{ font-family: system-ui, sans-serif; background: #14161a; color: #e8e8e8;
            max-width: 860px; margin: 0 auto; padding: 24px; }}
@@ -400,18 +416,18 @@ def build_pipeline_preview_html(output_dir: Path, manifest: dict) -> str:
   </style>
 </head>
 <body>
-  <h1>🚀 Pipeline — {html.escape(manifest['source'])}
+  <h1>ðŸš€ Pipeline â€” {html.escape(manifest['source'])}
     <small>({html.escape(manifest['status'])})</small></h1>
   <div>
-    <span class="stat"><b>{summary.get('clip_count', '—')}</b> clips finaux</span>
-    <span class="stat"><b>{summary.get('export_count', '—')}</b> exports</span>
-    <span class="stat"><b>{summary.get('best_visibility', '—')}</b> meilleure visibilité</span>
+    <span class="stat"><b>{summary.get('clip_count', 'â€”')}</b> clips finaux</span>
+    <span class="stat"><b>{summary.get('export_count', 'â€”')}</b> exports</span>
+    <span class="stat"><b>{summary.get('best_visibility', 'â€”')}</b> meilleure visibilitÃ©</span>
   </div>
-  <h2>Résultats</h2>
+  <h2>RÃ©sultats</h2>
   <ul>{''.join(items)}</ul>
-  <h2>Étapes</h2>
+  <h2>Ã‰tapes</h2>
   <table>{rows}</table>
-  <footer>Généré par otherme_clipper (Phase 13). Page locale : aucun serveur requis.</footer>
+  <footer>GÃ©nÃ©rÃ© par otherme_clipper (Phase 13). Page locale : aucun serveur requis.</footer>
 </body>
 </html>
 """
@@ -476,11 +492,11 @@ def run_pipeline(source: str, cli_options: dict | None = None) -> dict:
 
         if failed_essential:
             entry["status"] = "skipped"
-            logger.info("%s : sauté (échec en amont)", label)
+            logger.info("%s : sautÃ© (Ã©chec en amont)", label)
             continue
         if disabled and not must_resolve:
             entry["status"] = "disabled"
-            logger.info("%s : désactivé", label)
+            logger.info("%s : dÃ©sactivÃ©", label)
             continue
         if out_of_range and not must_resolve:
             entry["status"] = "skipped"
@@ -494,7 +510,7 @@ def run_pipeline(source: str, cli_options: dict | None = None) -> dict:
             if get_content_mode(output_dir) == "preserve_short":
                 entry["status"] = "skipped"
                 entry["produced"] = []
-                logger.info("%s : sauté (mode preserve_short, aucun cut)", label)
+                logger.info("%s : sautÃ© (mode preserve_short, aucun cut)", label)
                 continue
 
         # --- Reprise pipeline : sorties deja presentes ---
@@ -502,14 +518,14 @@ def run_pipeline(source: str, cli_options: dict | None = None) -> dict:
                 and _stage_outputs_reusable(output_dir, stage, options)):
             entry["status"] = "resumed"
             entry["produced"] = stage["outputs"]
-            logger.info("%s : ✔ repris (sorties présentes)", label)
+            logger.info("%s : âœ” repris (sorties prÃ©sentes)", label)
             if stage_id == "source_popularity":
                 _add_source_popularity_details(output_dir, entry)
             manifest["last_completed_stage"] = stage_id
             continue
 
         # --- Execution ---
-        logger.info("%s : exécution ...", label)
+        logger.info("%s : exÃ©cution ...", label)
         stage_start = time.perf_counter()
         try:
             result_path = RUNNERS[stage_id](context)
@@ -527,22 +543,22 @@ def run_pipeline(source: str, cli_options: dict | None = None) -> dict:
             if stage_id == "source_popularity":
                 _add_source_popularity_details(output_dir, entry)
             manifest["last_completed_stage"] = stage_id
-            logger.info("%s : ✔ terminé en %.1fs -> %s",
+            logger.info("%s : âœ” terminÃ© en %.1fs -> %s",
                         label, entry["duration_seconds"], result_path)
         except Exception as error:  # Jamais masquee : tracee + decision
             entry["duration_seconds"] = round(time.perf_counter() - stage_start, 1)
             entry["status"] = "failed"
             entry["error"] = str(error)
-            logger.error("%s : ✘ échec — %s", label, error)
+            logger.error("%s : âœ˜ Ã©chec â€” %s", label, error)
             if stage["essential"] or not options.get("keep_going"):
                 failed_essential = True
                 logger.error(
-                    "Pipeline arrêté. Pour reprendre après correction :\n"
+                    "Pipeline arrÃªtÃ©. Pour reprendre aprÃ¨s correction :\n"
                     "  python -m src.pipeline.run \"%s\" --resume --from-stage %s",
                     source, stage_id,
                 )
             else:
-                logger.warning("--keep-going : on continue (étape secondaire)")
+                logger.warning("--keep-going : on continue (Ã©tape secondaire)")
 
         # Manifest ecrit apres CHAQUE etape (reprise possible apres crash)
         if output_dir is not None:
@@ -566,7 +582,7 @@ def run_pipeline(source: str, cli_options: dict | None = None) -> dict:
         if manifest["status"] == "completed" and options.get("cache_cleanup") == "clean_audio":
             audio = get_path("cache_dir") / output_dir.name / "audio.wav"
             audio.unlink(missing_ok=True)
-            logger.info("Cache audio nettoyé (%s)", audio)
+            logger.info("Cache audio nettoyÃ© (%s)", audio)
     return manifest
 
 
@@ -599,11 +615,11 @@ def _build_summary(output_dir: Path) -> dict:
 def _print_summary(output_dir: Path, manifest: dict) -> None:
     summary = manifest.get("summary", {})
     print("\n" + "=" * 60)
-    print(f"Pipeline {manifest['status'].upper()} — {manifest['source']}")
-    print(f"  Clips finaux    : {summary.get('clip_count', '—')}")
-    print(f"  Exports         : {summary.get('export_count', '—')} "
-          f"({', '.join(summary.get('platforms') or []) or '—'})")
-    print(f"  Meilleure visib.: {summary.get('best_visibility', '—')}")
+    print(f"Pipeline {manifest['status'].upper()} â€” {manifest['source']}")
+    print(f"  Clips finaux    : {summary.get('clip_count', 'â€”')}")
+    print(f"  Exports         : {summary.get('export_count', 'â€”')} "
+          f"({', '.join(summary.get('platforms') or []) or 'â€”'})")
+    print(f"  Meilleure visib.: {summary.get('best_visibility', 'â€”')}")
     print(f"  Dossier         : {output_dir}")
     print(f"  Preview finale  : {output_dir / 'pipeline_preview.html'}")
     print("=" * 60)
@@ -611,7 +627,7 @@ def _print_summary(output_dir: Path, manifest: dict) -> None:
 
 def _dry_run(source: str, options: dict, from_index: int, to_index: int) -> dict:
     """Affiche le plan sans rien executer (aucun FFmpeg, aucun Whisper)."""
-    print(f"\nDRY RUN — {source}")
+    print(f"\nDRY RUN â€” {source}")
     print(f"Options : top={options.get('top')} platform={options.get('platform')} "
           f"style={options.get('subtitle_style')} template={options.get('template')} "
           f"reframe={options.get('reframe_method')} popularity={options.get('popularity_mode')}")
@@ -623,7 +639,8 @@ def _dry_run(source: str, options: dict, from_index: int, to_index: int) -> dict
     for config_file in ("config.yaml", "configs/pipeline.yaml",
                         "configs/scoring.yaml", "configs/subtitle_styles.yaml",
                         "configs/templates.yaml", "configs/export_profiles.yaml",
-                        "configs/visibility.yaml", "configs/source_popularity.yaml"):
+                        "configs/visibility.yaml", "configs/source_popularity.yaml",
+                        "configs/story_builder.yaml"):
         if not (PROJECT_ROOT / config_file).is_file():
             problems.append(f"config manquante : {config_file}")
     plan = []
@@ -632,19 +649,19 @@ def _dry_run(source: str, options: dict, from_index: int, to_index: int) -> dict
             status = "hors plage"
         elif not options["stages_enabled"].get(stage["id"], True) or (
                 stage["id"] == "preview" and options.get("skip_preview")):
-            status = "désactivée"
+            status = "dÃ©sactivÃ©e"
         else:
-            status = "à exécuter"
+            status = "Ã  exÃ©cuter"
         plan.append({"id": stage["id"], "status": status,
                      "outputs": stage["outputs"]})
         print(f"  [{index + 1:2d}/{len(STAGES)}] {stage['label']:26s} {status:12s} "
               f"-> {', '.join(stage['outputs'])}")
     if problems:
-        print("\nPrérequis manquants :")
+        print("\nPrÃ©requis manquants :")
         for problem in problems:
-            print(f"  ✘ {problem}")
+            print(f"  âœ˜ {problem}")
     else:
-        print("\nPrérequis OK (ffmpeg, ffprobe, configs).")
+        print("\nPrÃ©requis OK (ffmpeg, ffprobe, configs).")
     return {"status": "dry_run", "source": source, "plan": plan,
             "problems": problems}
 
@@ -684,6 +701,12 @@ def main() -> int:
     parser.add_argument("--popularity-mode", dest="popularity_mode", default=None,
                         choices=["off", "auto", "balanced", "popular", "original"],
                         help="Source popularity signals: off | auto | balanced | popular | original")
+    parser.add_argument("--story-mode", dest="story_mode", default=None,
+                        choices=["auto", "contiguous", "multi_scene"],
+                        help="Story assembly mode: auto | contiguous | multi_scene")
+    parser.add_argument("--story-max-segments", dest="story_max_segments",
+                        type=int, default=None, choices=[2, 3, 4, 5, 6],
+                        help="Maximum number of source segments in multi-scene clips")
     parser.add_argument("--force-popularity", dest="force_popularity",
                         action="store_true", default=None,
                         help="Refresh source_popularity_manifest.json even when resume is enabled")
@@ -715,3 +738,4 @@ def main() -> int:
 
 if __name__ == "__main__":
     sys.exit(main())
+

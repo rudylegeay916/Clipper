@@ -34,6 +34,7 @@ from pathlib import Path
 import yaml
 
 from src.ingestion.ingest import ingest
+from src.storyboard.assembler import map_words_to_output_timeline
 from src.subtitles.generate_ass import (
     build_ass,
     extract_dialogue_events,
@@ -186,15 +187,29 @@ def build_subtitled_preview_html(manifest: dict) -> str:
 # ---------------------------------------------------------------------------
 
 def _merge_rank_entries(existing: list[dict], updated: list[dict],
-                        allowed_ranks: set[int] | None = None) -> list[dict]:
+                        replaced_rank: int | None = None) -> list[dict]:
     by_rank = {
         int(item["rank"]): item
         for item in existing
-        if "rank" in item and (allowed_ranks is None or int(item["rank"]) in allowed_ranks)
+        if "rank" in item and int(item["rank"]) != replaced_rank
     }
     for item in updated:
         by_rank[int(item["rank"])] = item
     return [by_rank[rank] for rank in sorted(by_rank)]
+
+
+def _timeline_output_segments(timeline: dict) -> list[dict]:
+    output = []
+    for segment in timeline.get("segments", []):
+        output.append({
+            "source_start": segment.get("source_start", segment.get("source_start_seconds")),
+            "source_end": segment.get("source_end", segment.get("source_end_seconds")),
+            "output_start": segment.get("output_start", segment.get("output_start_seconds")),
+            "output_end": segment.get("output_end", segment.get("output_end_seconds")),
+            "source_text": segment.get("source_text", ""),
+            "role": segment.get("role", "evidence"),
+        })
+    return output
 
 
 def burn_subtitles(source: str, force: bool = False, style_name: str | None = None,
@@ -257,7 +272,6 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
         c["rank"]: (c["cut_start"], c["cut_end"]) for c in clips_manifest["clips"]
     }
     timelines = load_timeline_manifest(output_dir)
-    active_ranks = {int(clip["rank"]) for clip in vertical_manifest.get("clips", [])}
     vertical_clips = vertical_manifest.get("clips", [])
     if rank:
         vertical_clips = [clip for clip in vertical_clips
@@ -296,6 +310,12 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
         else:
             cut_start, cut_end = cut_bounds[clip["rank"]]
             output_duration = cut_end - cut_start
+        try:
+            media_duration = float(probe_media(vertical_path)["format"]["duration"])
+            if media_duration > 0:
+                output_duration = media_duration
+        except Exception:
+            logger.warning("Duree media verticale indisponible, validation sur timeline.")
         logger.info(
             "Sous-titrage #%d : %s (recalage -%.3fs) ...",
             clip["rank"], clip["vertical_file"], cut_start,
@@ -304,11 +324,18 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
         # Recalage + groupage, segment par segment (jamais de groupe a
         # travers une frontiere de phrase)
         groups = []
+        output_segments = _timeline_output_segments(timeline or {})
         for segment in segments:
-            realigned = realign_words(
-                segment.get("words", []), cut_start, cut_end,
-                include_absolute=True,
-            )
+            if len(output_segments) > 1:
+                realigned = map_words_to_output_timeline(
+                    segment.get("words", []),
+                    output_segments,
+                )
+            else:
+                realigned = realign_words(
+                    segment.get("words", []), cut_start, cut_end,
+                    include_absolute=True,
+                )
             groups.extend(group_words(realigned, max_words, gap_threshold))
         word_count = sum(len(g) for g in groups)
         if word_count == 0:
@@ -394,7 +421,7 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
     # --- Manifest + galerie ---
     if rank and existing_manifest:
         manifest_clips = _merge_rank_entries(
-            existing_manifest.get("clips", []), manifest_clips, active_ranks)
+            existing_manifest.get("clips", []), manifest_clips, int(rank))
     manifest = {
         "source": vertical_manifest["source"],
         "subtitled_dir": str(subtitled_dir),

@@ -43,6 +43,7 @@ PIPELINE_STAGE_LABELS = [
     ("detection", "Detection"),
     ("source_popularity", "Popularite source"),
     ("scoring", "Scoring"),
+    ("story_planning", "Story planning"),
     ("cutting", "Decoupage"),
     ("reframe", "Reframe vertical"),
     ("speech_decision", "Decision sous-titres"),
@@ -63,6 +64,7 @@ USER_STAGE_LABELS = {
     "detection": "Selection des meilleurs moments",
     "source_popularity": "Signaux de popularite",
     "scoring": "Classement des moments",
+    "story_planning": "Plan de montage",
     "cutting": "Decoupage",
     "reframe": "Adaptation verticale",
     "speech_decision": "Decision sous-titres",
@@ -162,6 +164,8 @@ def build_pipeline_command(source: str | Path, options: dict) -> list[str]:
     add("--music", options.get("music", "auto"))
     add("--source-rights", options.get("source_rights", "unknown"))
     add("--language", options.get("language", "auto"))
+    add("--story-mode", options.get("story_mode", "auto"))
+    add("--story-max-segments", options.get("story_max_segments"))
     popularity_mode = options.get("popularity_mode", "auto")
     if popularity_mode:
         command.extend(["--popularity-mode", str(popularity_mode)])
@@ -202,6 +206,8 @@ def build_hook_rerender_command(metadata_path: str | Path, rank: int,
         ("--template", "template"),
         ("--music", "music"),
         ("--language", "language"),
+        ("--story-mode", "story_mode"),
+        ("--story-max-segments", "story_max_segments"),
     ):
         value = opts.get(key)
         if value and value != "auto":
@@ -231,11 +237,18 @@ def build_timing_rerender_command(metadata_path: str | Path, rank: int,
         ("--template", "template"),
         ("--music", "music"),
         ("--language", "language"),
+        ("--story-mode", "story_mode"),
+        ("--story-max-segments", "story_max_segments"),
     ):
         value = opts.get(key)
         if value and value != "auto":
             command.extend([flag, str(value)])
     return command
+
+
+def build_storyboard_rerender_command(metadata_path: str | Path, rank: int,
+                                      options: dict | None = None) -> list[str]:
+    return build_timing_rerender_command(metadata_path, rank, options)
 
 
 def build_repair_rerender_command(metadata_path: str | Path, rank: int, from_stage: str,
@@ -471,6 +484,50 @@ def create_timing_rerender_job(parent_job: dict, output_dir: str | Path, clip_ra
         "job_id": job_id,
         "job_type": "hook_rerender",
         "rerender_reason": "manual_timing",
+        "parent_project": str(output_dir),
+        "parent_job_id": parent_job.get("job_id"),
+        "project_name": parent_job.get("project_name", output_dir.name),
+        "project_output_dir": str(output_dir),
+        "source": str(metadata_path),
+        "source_type": "metadata",
+        "campaign_profile": parent_job.get("campaign_profile", "default"),
+        "clip_rank": int(clip_rank),
+        "requested_hook": None,
+        "options": dict(options or parent_job.get("options", {})),
+        "created_at": utc_now(),
+        "started_at": None,
+        "completed_at": None,
+        "status": "pending",
+        "pid": None,
+        "error": None,
+        "pipeline_manifest_path": str(output_dir / "pipeline_manifest.json"),
+        "command": command,
+        "log_path": str(job_dir / "pipeline.log"),
+        "backup": _backup_rerender_targets(job_dir, output_dir, clip_rank),
+        "restored": False,
+    }
+    save_job(job)
+    return job
+
+
+def create_storyboard_rerender_job(parent_job: dict, output_dir: str | Path, clip_rank: int,
+                                   options: dict | None = None) -> dict:
+    output_dir = Path(output_dir)
+    metadata_path = output_dir / "metadata.json"
+    if not metadata_path.is_file():
+        raise FileNotFoundError(f"metadata.json introuvable : {metadata_path}")
+    existing = find_active_hook_rerender(output_dir, clip_rank)
+    if existing:
+        return existing
+
+    job_id = new_job_id()
+    job_dir, _upload_dir = ensure_job_dirs(job_id)
+    command = build_storyboard_rerender_command(
+        metadata_path, clip_rank, options or parent_job.get("options", {}))
+    job = {
+        "job_id": job_id,
+        "job_type": "hook_rerender",
+        "rerender_reason": "manual_storyboard",
         "parent_project": str(output_dir),
         "parent_job_id": parent_job.get("job_id"),
         "project_name": parent_job.get("project_name", output_dir.name),
