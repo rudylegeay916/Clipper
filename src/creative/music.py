@@ -9,7 +9,7 @@ vide = export sans musique, sans echec.
 import yaml
 
 from src.utils.config import PROJECT_ROOT
-from src.utils.ffmpeg import run_ffmpeg
+from src.utils.ffmpeg import mp4_render_lock, run_ffmpeg_atomic
 from src.utils.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -152,11 +152,13 @@ def apply_music(clip_path, track_path, destination, gain_db: int = -22,
             "afade=t=in:d=0.8[bg];"
             "[0:a][bg]amix=inputs=2:duration=first:dropout_transition=0.5[out]"
         )
-    run_ffmpeg([
-        "-i", clip_path, "-i", track_path,
-        "-filter_complex", graph,
-        "-map", "0:v", "-map", "[out]",
-        "-c:v", "copy", "-c:a", "aac", "-b:a", "192k",
-        "-movflags", "+faststart",
-        destination,
-    ])
+    with mp4_render_lock(destination):
+        run_ffmpeg_atomic([
+            "-i", clip_path, "-i", track_path,
+            "-filter_complex", graph,
+            "-map", "0:v", "-map", "[out]",
+            "-c:v", "libx264", "-preset", "medium", "-crf", "18",
+            "-pix_fmt", "yuv420p",
+            "-c:a", "aac", "-b:a", "192k",
+            "-movflags", "+faststart",
+        ], destination, require_audio=True)

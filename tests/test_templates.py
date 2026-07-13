@@ -218,7 +218,7 @@ def test_ffmpeg_failure_falls_back_to_copy(monkeypatch, subtitled_clip, tmp_path
 
     def failing(*args, **kwargs):
         raise FFmpegError("echec simule du rendu template")
-    monkeypatch.setattr("src.templates.apply.run_ffmpeg", failing)
+    monkeypatch.setattr("src.templates.apply.run_ffmpeg_atomic", failing)
 
     destination = tmp_path / "fallback.mp4"
     result = apply_single_clip(

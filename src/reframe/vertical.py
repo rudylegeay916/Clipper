@@ -778,8 +778,21 @@ def build_vertical_preview_html(manifest: dict) -> str:
 # Point d'entree du reframe
 # ---------------------------------------------------------------------------
 
+def _merge_rank_entries(existing: list[dict], updated: list[dict],
+                        allowed_ranks: set[int] | None = None) -> list[dict]:
+    by_rank = {
+        int(item["rank"]): item
+        for item in existing
+        if "rank" in item and (allowed_ranks is None or int(item["rank"]) in allowed_ranks)
+    }
+    for item in updated:
+        by_rank[int(item["rank"])] = item
+    return [by_rank[rank] for rank in sorted(by_rank)]
+
+
 def reframe_clips(source: str, force: bool = False, method: str | None = None,
-                  top: int | None = None, stability: str | None = None) -> Path:
+                  top: int | None = None, stability: str | None = None,
+                  rank: int | None = None) -> Path:
     """
     Reframe les clips de la Phase 6 en vertical 9:16 et ecrit
     output/<nom_video>/vertical_manifest.json + la galerie.
@@ -803,6 +816,7 @@ def reframe_clips(source: str, force: bool = False, method: str | None = None,
 
     # --- Reprise ---
     overwrite = force or config.get("pipeline", {}).get("overwrite", False)
+    existing_manifest = {}
     if manifest_path.is_file() and not overwrite:
         with open(manifest_path, encoding="utf-8") as f:
             existing = json.load(f)
@@ -811,6 +825,9 @@ def reframe_clips(source: str, force: bool = False, method: str | None = None,
             logger.info("Reprise : clips verticaux deja generes (%s)", manifest_path)
             return manifest_path
         logger.info("Manifest present mais fichiers manquants : regeneration ...")
+    elif manifest_path.is_file():
+        with open(manifest_path, encoding="utf-8") as f:
+            existing_manifest = json.load(f)
 
     # --- Prerequis : clips de la Phase 6 ---
     clips_manifest_path = output_dir / "clips_manifest.json"
@@ -823,6 +840,8 @@ def reframe_clips(source: str, force: bool = False, method: str | None = None,
         clips_manifest = json.load(f)
 
     clips = clips_manifest.get("clips", [])
+    if rank:
+        clips = [clip for clip in clips if int(clip.get("rank", 0)) == int(rank)]
     if top:
         clips = clips[:top]
     if not clips:
@@ -886,6 +905,10 @@ def reframe_clips(source: str, force: bool = False, method: str | None = None,
         logger.info("  -> %s (%s)", vertical_name, info["method"])
 
     # --- Manifest + galerie ---
+    if rank and existing_manifest:
+        active_ranks = {int(clip["rank"]) for clip in clips}
+        vertical_clips = _merge_rank_entries(
+            existing_manifest.get("clips", []), vertical_clips, active_ranks)
     manifest = {
         "source": clips_manifest["source"],
         "vertical_dir": str(vertical_dir),
@@ -935,6 +958,8 @@ def main() -> int:
         "--top", type=int, default=None,
         help="Ne reframe que les N meilleurs clips",
     )
+    parser.add_argument("--rank", type=int, default=None,
+                        help="Ne reframe que le clip de rang N")
     parser.add_argument(
         "--force", action="store_true",
         help="Regenere meme si les clips verticaux existent deja",
@@ -944,7 +969,7 @@ def main() -> int:
     try:
         manifest_path = reframe_clips(
             args.source, force=args.force, method=args.method, top=args.top,
-            stability=args.stability,
+            stability=args.stability, rank=args.rank,
         )
     except (FFmpegError, FileNotFoundError, ValueError, RuntimeError) as error:
         logger.error("%s", error)

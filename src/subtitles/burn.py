@@ -34,7 +34,14 @@ from pathlib import Path
 import yaml
 
 from src.ingestion.ingest import ingest
-from src.subtitles.generate_ass import build_ass, group_words, realign_words
+from src.subtitles.generate_ass import (
+    build_ass,
+    extract_dialogue_events,
+    group_words,
+    realign_words,
+    validate_ass_events,
+)
+from src.timeline import load_timeline_manifest, subtitle_alignment_diagnostics
 from src.utils.config import PROJECT_ROOT, load_config
 from src.utils.ffmpeg import FFmpegError, format_filter_path, probe_media, run_ffmpeg
 from src.utils.logging_setup import get_logger
@@ -178,8 +185,20 @@ def build_subtitled_preview_html(manifest: dict) -> str:
 # Point d'entree
 # ---------------------------------------------------------------------------
 
+def _merge_rank_entries(existing: list[dict], updated: list[dict],
+                        allowed_ranks: set[int] | None = None) -> list[dict]:
+    by_rank = {
+        int(item["rank"]): item
+        for item in existing
+        if "rank" in item and (allowed_ranks is None or int(item["rank"]) in allowed_ranks)
+    }
+    for item in updated:
+        by_rank[int(item["rank"])] = item
+    return [by_rank[rank] for rank in sorted(by_rank)]
+
+
 def burn_subtitles(source: str, force: bool = False, style_name: str | None = None,
-                   top: int | None = None) -> Path:
+                   top: int | None = None, rank: int | None = None) -> Path:
     """
     Sous-titre les clips verticaux d'une video et ecrit
     output/<nom_video>/subtitles_manifest.json. Retourne ce chemin.
@@ -206,6 +225,7 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
 
     # --- Reprise ---
     overwrite = force or config.get("pipeline", {}).get("overwrite", False)
+    existing_manifest = {}
     if manifest_path.is_file() and not overwrite:
         with open(manifest_path, encoding="utf-8") as f:
             existing = json.load(f)
@@ -214,6 +234,9 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
             logger.info("Reprise : clips deja sous-titres (%s)", manifest_path)
             return manifest_path
         logger.info("Manifest present mais fichiers manquants : regeneration ...")
+    elif manifest_path.is_file():
+        with open(manifest_path, encoding="utf-8") as f:
+            existing_manifest = json.load(f)
 
     # --- Prerequis : phases 3, 6 et 7 ---
     def _require(name: str, phase: str, command: str) -> dict:
@@ -233,7 +256,12 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
     cut_bounds = {
         c["rank"]: (c["cut_start"], c["cut_end"]) for c in clips_manifest["clips"]
     }
+    timelines = load_timeline_manifest(output_dir)
+    active_ranks = {int(clip["rank"]) for clip in vertical_manifest.get("clips", [])}
     vertical_clips = vertical_manifest.get("clips", [])
+    if rank:
+        vertical_clips = [clip for clip in vertical_clips
+                          if int(clip.get("rank", 0)) == int(rank)]
     if top:
         vertical_clips = vertical_clips[:top]
     if not vertical_clips:
@@ -260,7 +288,14 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
             logger.warning("Rang %s absent de clips_manifest.json, ignore", clip["rank"])
             continue
 
-        cut_start, cut_end = cut_bounds[clip["rank"]]
+        timeline = timelines.get(int(clip["rank"]))
+        if timeline:
+            cut_start = float(timeline["actual_cut_start_seconds"])
+            cut_end = float(timeline["actual_cut_end_seconds"])
+            output_duration = float(timeline["output_duration_seconds"])
+        else:
+            cut_start, cut_end = cut_bounds[clip["rank"]]
+            output_duration = cut_end - cut_start
         logger.info(
             "Sous-titrage #%d : %s (recalage -%.3fs) ...",
             clip["rank"], clip["vertical_file"], cut_start,
@@ -270,7 +305,10 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
         # travers une frontiere de phrase)
         groups = []
         for segment in segments:
-            realigned = realign_words(segment.get("words", []), cut_start, cut_end)
+            realigned = realign_words(
+                segment.get("words", []), cut_start, cut_end,
+                include_absolute=True,
+            )
             groups.extend(group_words(realigned, max_words, gap_threshold))
         word_count = sum(len(g) for g in groups)
         if word_count == 0:
@@ -285,6 +323,21 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
         karaoke = True
         content = build_ass(groups, style, karaoke=True, play_res=play_res,
                             lead_in=lead_in, hold=hold)
+        events = extract_dialogue_events(content)
+        flat_words = [word for group in groups for word in group]
+        absolute_words = [
+            {"word": word["word"], "start": word.get("absolute_start", word["start"] + cut_start)}
+            for word in flat_words
+        ]
+        diagnostics = subtitle_alignment_diagnostics(
+            absolute_words,
+            events,
+            timeline or {
+                "actual_cut_start_seconds": cut_start,
+            },
+        )
+        validate_ass_events(events, output_duration, max_delta_seconds=0.15,
+                            diagnostics=diagnostics[:len(events)])
         # UTF-8 avec BOM : exige par libass pour les accents
         ass_path.write_text(content, encoding="utf-8-sig")
 
@@ -303,6 +356,7 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
             karaoke = False
             content = build_ass(groups, style, karaoke=False, play_res=play_res,
                                 lead_in=lead_in, hold=hold)
+            validate_ass_events(extract_dialogue_events(content), output_duration)
             ass_path.write_text(content, encoding="utf-8-sig")
             burn_single_clip(
                 vertical_path, ass_path, destination,
@@ -325,6 +379,8 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
             "hook_text": clip["hook_text"],
             "suggested_title": clip["suggested_title"],
             "platform_fit": clip["platform_fit"],
+            "timeline": timeline,
+            "alignment_diagnostics": diagnostics[:10],
         }
         if not karaoke:
             entry["fallback"] = "non_karaoke"
@@ -336,6 +392,9 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
         )
 
     # --- Manifest + galerie ---
+    if rank and existing_manifest:
+        manifest_clips = _merge_rank_entries(
+            existing_manifest.get("clips", []), manifest_clips, active_ranks)
     manifest = {
         "source": vertical_manifest["source"],
         "subtitled_dir": str(subtitled_dir),
@@ -370,6 +429,8 @@ def main() -> int:
                         help="Style de configs/subtitle_styles.yaml (defaut : config.yaml)")
     parser.add_argument("--top", type=int, default=None,
                         help="Ne sous-titre que les N meilleurs clips")
+    parser.add_argument("--rank", type=int, default=None,
+                        help="Ne sous-titre que le clip de rang N")
     parser.add_argument("--force", action="store_true",
                         help="Regenere meme si les clips sous-titres existent")
     parser.add_argument("--list-styles", action="store_true",
@@ -386,7 +447,8 @@ def main() -> int:
 
     try:
         manifest_path = burn_subtitles(
-            args.source, force=args.force, style_name=args.style, top=args.top
+            args.source, force=args.force, style_name=args.style, top=args.top,
+            rank=args.rank,
         )
     except (FFmpegError, FileNotFoundError, ValueError, RuntimeError) as error:
         logger.error("%s", error)

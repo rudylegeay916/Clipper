@@ -28,7 +28,6 @@ Usage :
 import argparse
 import html
 import json
-import shutil
 import sys
 from datetime import datetime, timezone
 from pathlib import Path
@@ -37,7 +36,15 @@ import yaml
 
 from src.ingestion.ingest import ingest
 from src.utils.config import PROJECT_ROOT, load_config
-from src.utils.ffmpeg import FFmpegError, format_filter_path, probe_media, run_ffmpeg
+from src.utils.ffmpeg import (
+    FFmpegError,
+    copy_mp4_atomically,
+    format_filter_path,
+    mp4_render_lock,
+    probe_media,
+    run_ffmpeg_atomic,
+    validate_mp4,
+)
 from src.utils.logging_setup import get_logger
 
 logger = get_logger(__name__)
@@ -244,6 +251,7 @@ def apply_single_clip(subtitled_path: Path, destination: Path, hook_text: str | 
     """
     probe = probe_media(subtitled_path)
     stream = next(s for s in probe["streams"] if s["codec_type"] == "video")
+    audio_expected = any(s.get("codec_type") == "audio" for s in probe["streams"])
     width, height = stream["width"], stream["height"]
     duration = float(probe["format"]["duration"])
 
@@ -277,17 +285,17 @@ def apply_single_clip(subtitled_path: Path, destination: Path, hook_text: str | 
             settings, template, duration, width, height,
             hook_files if hook_files else None, logo_path
         )
-        run_ffmpeg([
-            "-i", subtitled_path,
-            *extra_inputs,
-            "-filter_complex", graph,
-            "-map", "[out]", "-map", "0:a?",
-            "-c:v", "libx264", "-preset", preset, "-crf", crf,
-            "-pix_fmt", "yuv420p",
-            "-c:a", "copy",
-            "-movflags", "+faststart",
-            destination,
-        ])
+        with mp4_render_lock(destination):
+            run_ffmpeg_atomic([
+                "-i", subtitled_path,
+                *extra_inputs,
+                "-filter_complex", graph,
+                "-map", "[out]", "-map", "0:a?",
+                "-c:v", "libx264", "-preset", preset, "-crf", crf,
+                "-pix_fmt", "yuv420p",
+                "-c:a", "aac", "-b:a", "192k",
+                "-movflags", "+faststart",
+            ], destination, require_audio=audio_expected)
         return {
             "effects_applied": effects,
             "watermark_applied": logo_path is not None,
@@ -301,7 +309,8 @@ def apply_single_clip(subtitled_path: Path, destination: Path, hook_text: str | 
             "FALLBACK : echec du rendu template sur %s, copie de la version "
             "sous-titree. Detail :\n%s", subtitled_path.name, error,
         )
-        shutil.copy2(subtitled_path, destination)
+        with mp4_render_lock(destination):
+            copy_mp4_atomically(subtitled_path, destination, require_audio=audio_expected)
         return {
             "effects_applied": [],
             "watermark_applied": False,
@@ -382,8 +391,13 @@ def build_final_preview_html(manifest: dict) -> str:
 # Point d'entree
 # ---------------------------------------------------------------------------
 
-def _merge_rank_entries(existing: list[dict], updated: list[dict]) -> list[dict]:
-    by_rank = {int(item["rank"]): item for item in existing if "rank" in item}
+def _merge_rank_entries(existing: list[dict], updated: list[dict],
+                        replaced_rank: int | None = None) -> list[dict]:
+    by_rank = {
+        int(item["rank"]): item
+        for item in existing
+        if "rank" in item and int(item["rank"]) != replaced_rank
+    }
     for item in updated:
         by_rank[int(item["rank"])] = item
     return [by_rank[rank] for rank in sorted(by_rank)]
@@ -488,7 +502,9 @@ def apply_templates(source: str, force: bool = False, template_name: str | None 
                 crf=crf, preset=preset,
             )
         else:
-            shutil.copy2(subtitled_path, destination)
+            validate_mp4(subtitled_path)
+            with mp4_render_lock(destination):
+                copy_mp4_atomically(subtitled_path, destination)
             result = {"effects_applied": [], "watermark_applied": False,
                       "fallback": "templates_disabled", "errors": []}
 
@@ -516,7 +532,7 @@ def apply_templates(source: str, force: bool = False, template_name: str | None 
     # --- Manifest + galerie ---
     if rank and existing_manifest:
         manifest_clips = _merge_rank_entries(
-            existing_manifest.get("clips", []), manifest_clips)
+            existing_manifest.get("clips", []), manifest_clips, int(rank))
     manifest = {
         "source": subtitles_manifest["source"],
         "final_dir": str(final_dir),

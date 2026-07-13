@@ -41,6 +41,7 @@ from pathlib import Path
 
 from src.ingestion.ingest import ingest, slugify
 from src.preview.preview import needs_proxy
+from src.timeline import write_timeline_manifest
 from src.utils.config import load_config
 from src.utils.ffmpeg import FFmpegError, run_ffmpeg, run_ffprobe
 from src.utils.logging_setup import get_logger
@@ -100,6 +101,7 @@ def cut_single_clip(
     keyframe_tolerance: float = 0.2,
     encode_crf: int = 20,
     encode_preset: str = "veryfast",
+    has_audio: bool = True,
 ) -> dict:
     """
     Decoupe [start, end] de la video vers destination.
@@ -136,16 +138,18 @@ def cut_single_clip(
     else:
         # Reencodage precis a la frame : -ss avant -i (seek rapide),
         # decodage exact a partir de la keyframe precedente en interne
-        run_ffmpeg([
+        args = [
             "-ss", f"{start:.3f}",
             "-i", video_path,
             "-t", f"{end - start:.3f}",
+            "-vf", "setpts=PTS-STARTPTS",
             "-c:v", "libx264", "-preset", encode_preset, "-crf", encode_crf,
             "-pix_fmt", "yuv420p",
-            "-c:a", "aac", "-b:a", "192k",
-            "-movflags", "+faststart",
-            destination,
-        ])
+        ]
+        if has_audio:
+            args += ["-af", "asetpts=PTS-STARTPTS", "-c:a", "aac", "-b:a", "192k"]
+        args += ["-avoid_negative_ts", "make_zero", "-movflags", "+faststart", destination]
+        run_ffmpeg(args)
         method = "encode"
 
     return {
@@ -163,23 +167,30 @@ def build_clips_preview_html(manifest: dict) -> str:
     """Page galerie autonome : un lecteur par clip, avec score et raison."""
     cards = []
     for clip in manifest["clips"]:
+        platform_fit = clip.get("platform_fit", "unknown")
+        score = clip.get("score", 0)
+        duration = float(clip.get("duration", 0.0))
+        method = clip.get("method", "existing")
+        suggested_title = clip.get("suggested_title", "")
+        hook_text = clip.get("hook_text", "")
+        reason = clip.get("reason", "")
         badge = {"tiktok": "🎵 TikTok", "polyvalent": "🔁 Polyvalent",
                  "shorts": "▶ Shorts", "reels": "📸 Reels"}.get(
-            clip["platform_fit"], clip["platform_fit"])
+            platform_fit, platform_fit)
         cards.append(f"""
   <article class="card">
     <video src="{html.escape(clip['file'])}" controls preload="metadata"></video>
     <div class="meta">
       <div class="row">
         <span class="rank">#{clip['rank']}</span>
-        <span class="score">score {clip['score']}</span>
+        <span class="score">score {score}</span>
         <span class="badge">{html.escape(badge)}</span>
-        <span class="duration">{clip['duration']:.1f}s</span>
-        <span class="method">{html.escape(clip['method'])}</span>
+        <span class="duration">{duration:.1f}s</span>
+        <span class="method">{html.escape(method)}</span>
       </div>
-      <p class="title">{html.escape(clip['suggested_title'])}</p>
-      <p class="hook">🪝 {html.escape(clip['hook_text'])}</p>
-      <p class="reason">{html.escape(clip['reason'])}</p>
+      <p class="title">{html.escape(suggested_title)}</p>
+      <p class="hook">🪝 {html.escape(hook_text)}</p>
+      <p class="reason">{html.escape(reason)}</p>
     </div>
   </article>""")
 
@@ -223,7 +234,31 @@ def build_clips_preview_html(manifest: dict) -> str:
 # Point d'entree du decoupage
 # ---------------------------------------------------------------------------
 
-def cut_clips(source: str, force: bool = False, top: int | None = None) -> Path:
+def _load_manual_timings(output_dir: Path) -> dict[int, dict]:
+    path = output_dir / "manual_timings.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return {int(item["rank"]): item for item in data.get("clips", [])}
+
+
+def _merge_rank_entries(existing: list[dict], updated: list[dict],
+                        allowed_ranks: set[int] | None = None) -> list[dict]:
+    by_rank = {
+        int(item["rank"]): item
+        for item in existing
+        if "rank" in item and (allowed_ranks is None or int(item["rank"]) in allowed_ranks)
+    }
+    for item in updated:
+        by_rank[int(item["rank"])] = item
+    return [by_rank[rank] for rank in sorted(by_rank)]
+
+
+def cut_clips(source: str, force: bool = False, top: int | None = None,
+              rank: int | None = None) -> Path:
     """
     Decoupe les clips candidats d'une video et ecrit
     output/<nom_video>/clips_manifest.json + la galerie de preview.
@@ -251,6 +286,7 @@ def cut_clips(source: str, force: bool = False, top: int | None = None) -> Path:
 
     # --- Reprise : manifest existant ET tous les clips presents ---
     overwrite = force or config.get("pipeline", {}).get("overwrite", False)
+    existing_manifest = {}
     if manifest_path.is_file() and not overwrite:
         with open(manifest_path, encoding="utf-8") as f:
             existing = json.load(f)
@@ -258,6 +294,9 @@ def cut_clips(source: str, force: bool = False, top: int | None = None) -> Path:
             logger.info("Reprise : clips deja decoupes, reutilises (%s)", manifest_path)
             return manifest_path
         logger.info("Manifest present mais clips manquants : redecoupage ...")
+    elif manifest_path.is_file():
+        with open(manifest_path, encoding="utf-8") as f:
+            existing_manifest = json.load(f)
 
     # --- Prerequis : candidats de la Phase 5 ---
     candidates_path = output_dir / "candidates.json"
@@ -269,9 +308,14 @@ def cut_clips(source: str, force: bool = False, top: int | None = None) -> Path:
     with open(candidates_path, encoding="utf-8") as f:
         candidates_data = json.load(f)
 
-    candidates = candidates_data.get("candidates", [])
+    all_candidates = candidates_data.get("candidates", [])
     if top:
-        candidates = candidates[:top]
+        all_candidates = all_candidates[:top]
+    active_ranks = {int(candidate.get("rank", 0)) for candidate in all_candidates}
+    candidates = all_candidates
+    if rank:
+        candidates = [candidate for candidate in candidates
+                      if int(candidate.get("rank", 0)) == int(rank)]
     if not candidates:
         logger.warning("Aucun clip candidat a decouper (candidates.json vide).")
 
@@ -283,9 +327,11 @@ def cut_clips(source: str, force: bool = False, top: int | None = None) -> Path:
             "Elle a peut-etre ete deplacee : relancez l'ingestion."
         )
     video_duration = metadata["video"]["duration_seconds"]
+    has_audio = metadata.get("audio", {}).get("present", True)
     source_browser_safe = not needs_proxy(metadata)
 
     clips_dir.mkdir(parents=True, exist_ok=True)
+    manual_timings = _load_manual_timings(output_dir)
 
     # --- Decoupe de chaque candidat ---
     margin_before = clip_limits.get("margin_before", 0.3)
@@ -294,17 +340,21 @@ def cut_clips(source: str, force: bool = False, top: int | None = None) -> Path:
 
     clips = []
     for candidate in candidates:
-        rank = candidate["rank"]
+        clip_rank = candidate["rank"]
         # Marges de confort, bornees a la duree de la video
-        cut_start = max(0.0, candidate["start"] - margin_before)
-        cut_end = min(video_duration, candidate["end"] + margin_after)
+        if clip_rank in manual_timings:
+            cut_start = max(0.0, float(manual_timings[clip_rank]["start_seconds"]))
+            cut_end = min(video_duration, float(manual_timings[clip_rank]["end_seconds"]))
+        else:
+            cut_start = max(0.0, candidate["start"] - margin_before)
+            cut_end = min(video_duration, candidate["end"] + margin_after)
 
-        filename = build_clip_filename(rank, candidate["score"], candidate["hook_text"])
+        filename = build_clip_filename(clip_rank, candidate["score"], candidate["hook_text"])
         destination = clips_dir / filename
 
         logger.info(
             "Clip #%d [%.2fs -> %.2fs] (marges incluses) -> %s ...",
-            rank, cut_start, cut_end, filename,
+            clip_rank, cut_start, cut_end, filename,
         )
         result = cut_single_clip(
             video_path, cut_start, cut_end, destination,
@@ -313,6 +363,7 @@ def cut_clips(source: str, force: bool = False, top: int | None = None) -> Path:
             keyframe_tolerance=cutting_config.get("keyframe_tolerance", 0.2),
             encode_crf=cutting_config.get("encode_crf", 20),
             encode_preset=cutting_config.get("encode_preset", "veryfast"),
+            has_audio=has_audio,
         )
         logger.info(
             "  -> %s (%s, debut reel %.2fs)",
@@ -320,7 +371,7 @@ def cut_clips(source: str, force: bool = False, top: int | None = None) -> Path:
         )
 
         clips.append({
-            "rank": rank,
+            "rank": clip_rank,
             "score": candidate["score"],
             "file": filename,
             "requested_start": candidate["start"],
@@ -337,6 +388,8 @@ def cut_clips(source: str, force: bool = False, top: int | None = None) -> Path:
         })
 
     # --- Manifest + galerie ---
+    if rank and existing_manifest:
+        clips = _merge_rank_entries(existing_manifest.get("clips", []), clips, active_ranks)
     manifest = {
         "source": video_path.name,
         "source_file": str(video_path),
@@ -349,6 +402,7 @@ def cut_clips(source: str, force: bool = False, top: int | None = None) -> Path:
     }
     with open(manifest_path, "w", encoding="utf-8") as f:
         json.dump(manifest, f, ensure_ascii=False, indent=2)
+    write_timeline_manifest(output_dir, clips, video_duration)
 
     gallery_path = clips_dir / "preview.html"
     gallery_path.write_text(build_clips_preview_html(manifest), encoding="utf-8")
@@ -373,6 +427,8 @@ def main() -> int:
         "--top", type=int, default=None,
         help="Ne decoupe que les N meilleurs clips",
     )
+    parser.add_argument("--rank", type=int, default=None,
+                        help="Ne decoupe que le clip de rang N")
     parser.add_argument(
         "--force", action="store_true",
         help="Redecoupe meme si les clips existent deja",
@@ -380,7 +436,8 @@ def main() -> int:
     args = parser.parse_args()
 
     try:
-        manifest_path = cut_clips(args.source, force=args.force, top=args.top)
+        manifest_path = cut_clips(args.source, force=args.force, top=args.top,
+                                  rank=args.rank)
     except (FFmpegError, FileNotFoundError, ValueError, RuntimeError) as error:
         logger.error("%s", error)
         return 1

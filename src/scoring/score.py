@@ -52,6 +52,8 @@ from src.scoring.hooks import (
 from src.popularity.models import clamp_score
 from src.popularity.normalize import score_window_popularity
 from src.popularity.source import SOURCE_POPULARITY_FILE, load_source_popularity_config
+from src.quality.gate import apply_quality_gate
+from src.quality.visual import detect_black_segments
 from src.utils.config import PROJECT_ROOT, get_path, load_config
 from src.utils.ffmpeg import FFmpegError
 from src.utils.logging_setup import get_logger
@@ -59,6 +61,7 @@ from src.utils.logging_setup import get_logger
 logger = get_logger(__name__)
 
 SCORING_CONFIG_FILE = PROJECT_ROOT / "configs" / "scoring.yaml"
+QUALITY_CONFIG_FILE = PROJECT_ROOT / "configs" / "quality.yaml"
 
 # Motifs de rire dans un transcript (Whisper les produit parfois)
 LAUGHTER_PATTERN = re.compile(r"\b(haha+|ahah+|hihi+|rires?|laughs?|laughter|lol|mdr)\b", re.IGNORECASE)
@@ -69,6 +72,13 @@ def load_scoring_config() -> dict:
     """Charge configs/scoring.yaml (poids et bonus ajustables)."""
     with open(SCORING_CONFIG_FILE, encoding="utf-8") as f:
         return yaml.safe_load(f)
+
+
+def load_quality_config() -> dict:
+    if not QUALITY_CONFIG_FILE.is_file():
+        return {"enabled": False}
+    with open(QUALITY_CONFIG_FILE, encoding="utf-8") as f:
+        return yaml.safe_load(f).get("quality", {})
 
 
 def load_source_popularity_manifest(output_dir: Path) -> dict:
@@ -489,6 +499,7 @@ def score_video(source: str, force: bool = False, top: int | None = None,
     """
     config = load_config()
     scoring_config = load_scoring_config()
+    quality_config = load_quality_config()
     clip_limits = config.get("clips", {})
 
     # --- Resolution de la source ---
@@ -533,6 +544,17 @@ def score_video(source: str, force: bool = False, top: int | None = None,
         analysis_path = analyze_video(str(metadata_path))
     with open(analysis_path, encoding="utf-8") as f:
         analysis = json.load(f)
+    with open(metadata_path, encoding="utf-8") as f:
+        source_metadata = json.load(f)
+    black_segments = []
+    if quality_config.get("enabled", True):
+        try:
+            black_segments = detect_black_segments(
+                Path(source_metadata["source"]["file"]),
+                quality_config.get("blackdetect", {}),
+            )
+        except Exception as error:
+            logger.warning("Detection visuelle ignoree : %s", error)
 
     segments = transcript["segments"]
     language = transcript.get("language", "fr")
@@ -541,7 +563,7 @@ def score_video(source: str, force: bool = False, top: int | None = None,
 
     # --- Profil d'energie audio (WAV du cache, extrait au besoin) ---
     from src.transcription.transcribe import extract_audio
-    video_path = Path(json.load(open(metadata_path, encoding="utf-8"))["source"]["file"])
+    video_path = Path(source_metadata["source"]["file"])
     audio_path = get_path("cache_dir") / output_dir.name / "audio.wav"
     extract_audio(video_path, audio_path)
     logger.info("Calcul du profil d'energie audio ...")
@@ -744,6 +766,16 @@ def score_video(source: str, force: bool = False, top: int | None = None,
         if recentered:
             candidate["original_start"] = original_start
         candidate["score_detail"]["hook"]["penalties"] = hook_detail["penalties"]
+        if quality_config.get("enabled", True):
+            quality_words = [w for w in all_words if start <= w["start"] < end]
+            candidate = apply_quality_gate(
+                candidate,
+                quality_words,
+                black_segments=black_segments,
+                config=quality_config,
+            )
+            if not candidate.get("quality_gate_passed", True):
+                candidate["score"] = min(candidate["score"], candidate["editorial_score"])
         scored.append(candidate)
 
     if recentered_count:
@@ -754,8 +786,9 @@ def score_video(source: str, force: bool = False, top: int | None = None,
 
     # --- Selection finale ---
     max_clips = top or clip_limits.get("max_clips_per_video", 10)
+    gate_passed = [candidate for candidate in scored if candidate.get("quality_gate_passed", True)]
     selected = select_top_candidates(
-        scored,
+        gate_passed,
         max_clips=max_clips,
         max_overlap=clip_limits.get("max_overlap", 0.25),
         min_score=clip_limits.get("min_score", 40),
@@ -784,6 +817,15 @@ def score_video(source: str, force: bool = False, top: int | None = None,
         "window_count": len(scored),
         "clip_count": len(selected),
         "weights": weights,
+        "quality_gate": {
+            "enabled": bool(quality_config.get("enabled", True)),
+            "passed_count": len(gate_passed),
+            "rejected_count": len(scored) - len(gate_passed),
+            "message": (
+                "Aucun autre cut suffisamment coherent n'a ete trouve."
+                if len(selected) < max_clips else None
+            ),
+        },
         "source_popularity": {
             "mode": selected_popularity_mode,
             "provider": popularity_manifest.get("provider"),

@@ -17,7 +17,11 @@ from src.creative.engine import (
     build_rights_block,
     compute_creative_score,
     platform_eligibility,
+    run_creative_hooks,
+    run_creative_music,
     run_creative_routing,
+    run_cutting_with_mode,
+    run_speech_decision,
 )
 from src.creative.hooks import generate_hook_candidates, select_hook
 from src.creative.music import decide_music, detect_original_music
@@ -425,6 +429,83 @@ def test_creative_routing_stage_writes_manifest(fake_output_dir):
     assert manifest["requested_profiles"] == ["performance_short",
                                               "monetization_long"]
     assert any("Creator Rewards" in w for w in manifest["warnings"])
+
+
+def test_creative_steps_respect_rank_filter(fake_output_dir):
+    clips = [
+        {"rank": 1, "score": 80.0, "file": "clip_01.mp4", "duration": 8.0,
+         "requested_start": 0, "requested_end": 8, "cut_start": 0,
+         "cut_end": 8, "method": "encode", "hook_text": "Bon debut",
+         "hook_start_offset": 0.5, "suggested_title": "Bon debut",
+         "platform_fit": "tiktok", "reason": "test"},
+        {"rank": 2, "score": 70.0, "file": "clip_02.mp4", "duration": 8.0,
+         "requested_start": 8, "requested_end": 16, "cut_start": 8,
+         "cut_end": 16, "method": "encode", "hook_text": "Ancien hook",
+         "hook_start_offset": 0.5, "suggested_title": "Ancien",
+         "platform_fit": "tiktok", "reason": "test"},
+    ]
+    (fake_output_dir / "clips_manifest.json").write_text(
+        json.dumps({"source": "x", "clips": clips}, ensure_ascii=False),
+        encoding="utf-8",
+    )
+    (fake_output_dir / "creative_manifest.json").write_text(json.dumps({
+        "content_mode": "clipping_long",
+        "subtitles_mode_requested": "auto",
+        "music_mode_requested": "keep",
+        "clips": {
+            "2": {
+                "rank": 2,
+                "speech": {"speech_detected": True, "speech_word_count": 99},
+                "subtitle_decision": "burn",
+                "selected_hook": {"text": "Do not touch"},
+                "music_decision": {"music_mode": "keep_original"},
+            }
+        },
+    }), encoding="utf-8")
+
+    options = {"rank": 1, "subtitles": "auto", "music": "keep"}
+    run_speech_decision(fake_output_dir / "metadata.json", options)
+    run_creative_hooks(fake_output_dir / "metadata.json", options)
+    run_creative_music(fake_output_dir / "metadata.json", options)
+
+    manifest = json.loads((fake_output_dir / "creative_manifest.json").read_text(encoding="utf-8"))
+    assert "speech" in manifest["clips"]["1"]
+    assert "selected_hook" in manifest["clips"]["1"]
+    assert "music_decision" in manifest["clips"]["1"]
+    assert manifest["clips"]["2"]["selected_hook"]["text"] == "Do not touch"
+    assert manifest["clips"]["2"]["music_decision"]["music_mode"] == "keep_original"
+
+
+def test_rank_cutting_does_not_reapply_global_content_routing(monkeypatch, fake_output_dir):
+    (fake_output_dir / "creative_manifest.json").write_text(json.dumps({
+        "content_mode": "clipping_long",
+        "requested_profiles": ["performance_short", "monetization_long"],
+        "warnings": [],
+    }), encoding="utf-8")
+    (fake_output_dir / "clips_manifest.json").write_text(
+        json.dumps({"clips": [{"rank": 2, "file": "old.mp4"}]}),
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_cut(source, **kwargs):
+        calls.append(("cut", kwargs))
+        (fake_output_dir / "clips_manifest.json").write_text(
+            json.dumps({"clips": [{"rank": 1, "file": "new.mp4"}]}),
+            encoding="utf-8",
+        )
+        return fake_output_dir / "clips_manifest.json"
+
+    def fail_routing(*args, **kwargs):
+        raise AssertionError("content routing must not run during rank rerender")
+
+    monkeypatch.setattr("src.cutting.cut.cut_clips", fake_cut)
+    monkeypatch.setattr("src.creative.engine.routing.apply_content_mode", fail_routing)
+
+    result = run_cutting_with_mode(fake_output_dir / "metadata.json", {"rank": 1}, True)
+
+    assert result == fake_output_dir / "clips_manifest.json"
+    assert calls == [("cut", {"force": True, "top": None, "rank": 1})]
 
 
 def test_no_external_api_calls():

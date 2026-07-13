@@ -10,6 +10,80 @@ import pytest
 from src.ui import campaigns, jobs, projects, results
 
 
+class _SessionState(dict):
+    def __getattr__(self, name):
+        try:
+            return self[name]
+        except KeyError as error:
+            raise AttributeError(name) from error
+
+    def __setattr__(self, name, value):
+        self[name] = value
+
+
+class _FakeStreamlit:
+    def __init__(self, clicked: set[str] | None = None):
+        self.session_state = _SessionState()
+        self.clicked = clicked or set()
+        self.rerun_called = False
+        self.messages: list[tuple[str, str]] = []
+
+    def rerun(self):
+        self.rerun_called = True
+
+    def button(self, _label, key=None, **_kwargs):
+        return key in self.clicked
+
+    def container(self, **_kwargs):
+        return self
+
+    def columns(self, count):
+        size = count if isinstance(count, int) else len(count)
+        return [self for _ in range(size)]
+
+    def expander(self, *_args, **_kwargs):
+        return self
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_args):
+        return False
+
+    def title(self, text):
+        self.messages.append(("title", str(text)))
+
+    def markdown(self, text):
+        self.messages.append(("markdown", str(text)))
+
+    def write(self, *values):
+        self.messages.append(("write", " ".join(str(v) for v in values)))
+
+    def info(self, text):
+        self.messages.append(("info", str(text)))
+
+    def error(self, text):
+        self.messages.append(("error", str(text)))
+
+    def warning(self, text):
+        self.messages.append(("warning", str(text)))
+
+    def code(self, text, **_kwargs):
+        self.messages.append(("code", str(text)))
+
+    def image(self, *_args, **_kwargs):
+        pass
+
+    def progress(self, *_args, **_kwargs):
+        pass
+
+    def metric(self, *_args, **_kwargs):
+        pass
+
+    def divider(self):
+        pass
+
+
 def _patch_job_dirs(monkeypatch, tmp_path):
     monkeypatch.setattr(jobs, "JOBS_DIR", tmp_path / "output" / "_jobs")
     monkeypatch.setattr(jobs, "UPLOADS_DIR", tmp_path / "input" / "uploads")
@@ -197,6 +271,227 @@ def test_project_history_reads_existing_jobs(monkeypatch, tmp_path):
     assert history[0]["best_visibility"] == 88
 
 
+def test_projects_initial_state_selects_no_project(monkeypatch):
+    from src.ui import app
+
+    fake = _FakeStreamlit()
+    monkeypatch.setattr(app, "st", fake)
+
+    app._init_state()
+
+    assert fake.session_state["current_view"] == "projects"
+    assert fake.session_state["selected_project_id"] is None
+    assert fake.session_state["selected_project_dir"] is None
+
+
+def test_open_project_sets_explicit_route_and_reruns(monkeypatch):
+    from src.ui import app
+
+    fake = _FakeStreamlit()
+    monkeypatch.setattr(app, "st", fake)
+
+    app.open_project("job-a", r"C:\Projects With Spaces\A", "job-a")
+
+    assert fake.session_state["current_view"] == "project_detail"
+    assert fake.session_state["selected_project_id"] == "job-a"
+    assert fake.session_state["selected_project_dir"] == r"C:\Projects With Spaces\A"
+    assert fake.session_state["selected_job_id"] == "job-a"
+    assert fake.rerun_called is True
+
+
+def test_return_then_open_second_project_does_not_reuse_first(monkeypatch):
+    from src.ui import app
+
+    fake = _FakeStreamlit()
+    monkeypatch.setattr(app, "st", fake)
+
+    app.open_project("job-a", r"C:\Project A", "job-a")
+    app.return_to_projects()
+    app.open_project("job-b", r"C:\Project B", "job-b")
+
+    assert fake.session_state["current_view"] == "project_detail"
+    assert fake.session_state["selected_project_id"] == "job-b"
+    assert fake.session_state["selected_project_dir"] == r"C:\Project B"
+    assert fake.session_state["selected_job_id"] == "job-b"
+
+
+def test_projects_page_list_does_not_render_detail_before_click(monkeypatch):
+    from src.ui import app
+
+    fake = _FakeStreamlit()
+    monkeypatch.setattr(app, "st", fake)
+    monkeypatch.setattr(app.projects, "project_history", lambda: [{
+        "job_id": "job-a",
+        "name": "Project A",
+        "source": "video.mp4",
+        "date": "today",
+        "status": "completed",
+        "mode": None,
+        "clip_count": None,
+        "best_visibility": None,
+        "campaign": "default",
+        "output_dir": r"C:\Project A",
+    }])
+    monkeypatch.setattr(app, "render_project_detail", lambda: pytest.fail("detail rendered too early"))
+
+    app._init_state()
+    app.page_projects()
+
+    assert not any("Progression -" in message for _kind, message in fake.messages)
+    assert fake.session_state["current_view"] == "projects"
+
+
+def test_projects_page_open_button_selects_exact_project(monkeypatch):
+    from src.ui import app
+
+    fake = _FakeStreamlit(clicked={"open_project_job-b"})
+    monkeypatch.setattr(app, "st", fake)
+    monkeypatch.setattr(app.projects, "project_history", lambda: [{
+        "job_id": "job-a",
+        "name": "Project A",
+        "source": "a.mp4",
+        "date": "today",
+        "status": "completed",
+        "mode": None,
+        "clip_count": None,
+        "best_visibility": None,
+        "campaign": "default",
+        "output_dir": r"C:\Project A",
+    }, {
+        "job_id": "job-b",
+        "name": "Project B",
+        "source": "b.mp4",
+        "date": "today",
+        "status": "completed",
+        "mode": None,
+        "clip_count": None,
+        "best_visibility": None,
+        "campaign": "default",
+        "output_dir": r"C:\Project B",
+    }])
+
+    app._init_state()
+    app.page_projects()
+
+    assert fake.session_state["current_view"] == "project_detail"
+    assert fake.session_state["selected_project_id"] == "job-b"
+    assert fake.session_state["selected_project_dir"] == r"C:\Project B"
+    assert fake.rerun_called is True
+
+
+def test_projects_page_resume_starts_pipeline_and_opens_detail(monkeypatch):
+    from src.ui import app
+
+    fake = _FakeStreamlit(clicked={"resume_project_job-a"})
+    resumed_calls = []
+    monkeypatch.setattr(app, "st", fake)
+    monkeypatch.setattr(app.projects, "project_history", lambda: [{
+        "job_id": "job-a",
+        "name": "Project A",
+        "source": "a.mp4",
+        "date": "today",
+        "status": "failed",
+        "mode": None,
+        "clip_count": None,
+        "best_visibility": None,
+        "campaign": "default",
+        "output_dir": r"C:\Project A",
+    }])
+    monkeypatch.setattr(app.jobs, "load_job", lambda job_id: {"job_id": job_id})
+
+    def fake_resume(job):
+        resumed_calls.append(job["job_id"])
+        return {"job_id": job["job_id"]}
+
+    monkeypatch.setattr(app.jobs, "resume_failed_job", fake_resume)
+
+    app._init_state()
+    app.page_projects()
+
+    assert resumed_calls == ["job-a"]
+    assert fake.session_state["current_view"] == "project_detail"
+    assert fake.session_state["selected_job_id"] == "job-a"
+
+
+def test_project_detail_completed_with_ready_clip_renders_results(monkeypatch, tmp_path):
+    from src.ui import app
+
+    fake = _FakeStreamlit()
+    rendered = []
+    job = {
+        "job_id": "job-a",
+        "project_name": "Project A",
+        "source": "a.mp4",
+        "status": "completed",
+        "project_output_dir": str(tmp_path / "project a"),
+        "campaign_profile": "default",
+    }
+    monkeypatch.setattr(app, "st", fake)
+    monkeypatch.setattr(app, "_selected_project_job", lambda: job)
+    monkeypatch.setattr(app.results, "detect_results", lambda *_args: [{"result_state": "ready"}])
+    monkeypatch.setattr(app, "render_results", lambda selected: rendered.append(selected["job_id"]))
+    fake.session_state["selected_project_dir"] = job["project_output_dir"]
+
+    app.render_project_detail()
+
+    assert rendered == ["job-a"]
+
+
+def test_project_detail_completed_without_ready_clip_shows_summary(monkeypatch, tmp_path):
+    from src.ui import app
+
+    fake = _FakeStreamlit()
+    job = {
+        "job_id": "job-a",
+        "project_name": "Project A",
+        "source": "a.mp4",
+        "status": "completed",
+        "project_output_dir": str(tmp_path / "project a"),
+        "campaign_profile": "default",
+    }
+    monkeypatch.setattr(app, "st", fake)
+    monkeypatch.setattr(app, "_selected_project_job", lambda: job)
+    monkeypatch.setattr(app.results, "detect_results", lambda *_args: [{"result_state": "timeline_missing"}])
+    fake.session_state["selected_project_dir"] = job["project_output_dir"]
+
+    app.render_project_detail()
+
+    assert ("info", "Aucun clip valide n'a ete produit pour ce projet.") in fake.messages
+
+
+@pytest.mark.parametrize("status", ["running", "failed"])
+def test_project_detail_running_or_failed_renders_progress(monkeypatch, tmp_path, status):
+    from src.ui import app
+
+    fake = _FakeStreamlit()
+    rendered = []
+    job = {
+        "job_id": "job-a",
+        "project_name": "Project A",
+        "source": "a.mp4",
+        "status": status,
+        "project_output_dir": str(tmp_path / "project a"),
+    }
+    monkeypatch.setattr(app, "st", fake)
+    monkeypatch.setattr(app, "_selected_project_job", lambda: job)
+    monkeypatch.setattr(app, "render_job_progress", lambda selected: rendered.append(selected["status"]))
+    fake.session_state["selected_project_dir"] = job["project_output_dir"]
+
+    app.render_project_detail()
+
+    assert rendered == [status]
+
+
+def test_project_buttons_use_unique_project_keys():
+    source = (jobs.PROJECT_ROOT / "src" / "ui" / "app.py").read_text(encoding="utf-8")
+
+    assert "open_project_{item['job_id']}" in source
+    assert "resume_project_{item['job_id']}" in source
+    assert "logs_project_{item['job_id']}" in source
+    assert "delete_project_{item['job_id']}" in source
+    assert 'key="open"' not in source
+
+
 def test_load_ui_and_campaign_configs():
     assert jobs.load_ui_config()["defaults"]["template"] == "creative_social"
     assert jobs.load_ui_config()["defaults"]["popularity_mode"] == "auto"
@@ -294,6 +589,34 @@ def _make_project(output_dir: Path):
         }),
         encoding="utf-8",
     )
+    (output_dir / "clip_timeline_manifest.json").write_text(
+        json.dumps({
+            "clips": [{
+                "rank": 1,
+                "source_duration_seconds": 300,
+                "requested_start_seconds": 10,
+                "requested_end_seconds": 52,
+                "actual_cut_start_seconds": 10,
+                "actual_cut_end_seconds": 52,
+                "timeline_origin_seconds": 10,
+                "output_duration_seconds": 42,
+                "recentered": False,
+                "segments": [],
+            }, {
+                "rank": 2,
+                "source_duration_seconds": 300,
+                "requested_start_seconds": 70,
+                "requested_end_seconds": 105,
+                "actual_cut_start_seconds": 70,
+                "actual_cut_end_seconds": 105,
+                "timeline_origin_seconds": 70,
+                "output_duration_seconds": 35,
+                "recentered": False,
+                "segments": [],
+            }],
+        }),
+        encoding="utf-8",
+    )
     (output_dir / "source_popularity_manifest.json").write_text(
         json.dumps({
             "provider": "yt_dlp_public_heatmap",
@@ -356,6 +679,142 @@ def test_detect_results_and_hook_candidates(tmp_path):
     assert clips[0]["popularity_bonus"] == 4.5
     assert "Indice popularite source" in clips[0]["popularity_badge"]
     assert "remuneration" in clips[0]["disclaimer"]
+    assert clips[0]["source_start_seconds"] == 10
+
+
+def test_detect_results_marks_invalid_final_without_showing_video(monkeypatch, tmp_path):
+    output_dir = tmp_path / "project"
+    _make_project(output_dir)
+
+    def invalid(*args, **kwargs):
+        raise RuntimeError("bad mp4")
+
+    monkeypatch.setattr(results, "validate_mp4", invalid)
+    clip = results.detect_results(output_dir, "default")[0]
+
+    assert clip["video_valid"] is False
+    assert clip["video_error"] == "Le rendu video est incomplet ou corrompu. Regenerez ce clip."
+    assert clip["result_state"] == "render_invalid"
+
+
+def test_detect_results_masks_temporary_rendering_files(tmp_path):
+    output_dir = tmp_path / "project"
+    _make_project(output_dir)
+    manifest = json.loads((output_dir / "final_manifest.json").read_text(encoding="utf-8"))
+    manifest["clips"][0]["final_file"] = "final_01.rendering-abc123.mp4"
+    (output_dir / "final" / "final_01.rendering-abc123.mp4").write_bytes(b"partial")
+    (output_dir / "final_manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+
+    clip = results.detect_results(output_dir, "default")[0]
+
+    assert clip["video_valid"] is False
+    assert "temporaire" in clip["video_error"]
+    assert clip["result_state"] == "processing"
+
+
+def test_result_state_ready_requires_valid_timeline_and_video(monkeypatch, tmp_path):
+    output_dir = tmp_path / "project"
+    _make_project(output_dir)
+    monkeypatch.setattr(results, "validate_mp4", lambda path: None)
+
+    state = results.build_result_state(output_dir, 1)
+
+    assert state["status"] == "ready"
+    assert state["video_valid"] is True
+    assert state["message"] is None
+
+
+def test_result_state_timeline_missing_blocks_old_final(monkeypatch, tmp_path):
+    output_dir = tmp_path / "project"
+    _make_project(output_dir)
+    (output_dir / "clip_timeline_manifest.json").unlink()
+    monkeypatch.setattr(results, "validate_mp4", lambda path: None)
+
+    clip = results.detect_results(output_dir, "default")[0]
+
+    assert clip["result_state"] == "timeline_missing"
+    assert clip["video_valid"] is False
+    assert "Timings source indisponibles" in clip["status_message"]
+    assert clip["source_start_seconds"] is None
+    assert clip["repair_stage"] == "cutting"
+
+
+def test_metadata_only_rank_is_not_exposed_as_active_result(tmp_path):
+    output_dir = tmp_path / "project"
+    output_dir.mkdir()
+    (output_dir / "metadata_posts.json").write_text(
+        json.dumps({"posts": [{"rank": 2, "suggested_titles": ["Old title"]}]}),
+        encoding="utf-8",
+    )
+
+    assert results.build_result_state(output_dir, 2)["status"] == "metadata_only"
+    assert results.detect_results(output_dir, "default") == []
+
+
+def test_result_state_generation_mismatch_marks_stale(monkeypatch, tmp_path):
+    output_dir = tmp_path / "project"
+    _make_project(output_dir)
+    monkeypatch.setattr(results, "validate_mp4", lambda path: None)
+    final = json.loads((output_dir / "final_manifest.json").read_text(encoding="utf-8"))
+    final["clips"][0]["generation_id"] = "old"
+    timeline = json.loads((output_dir / "clip_timeline_manifest.json").read_text(encoding="utf-8"))
+    timeline["clips"][0]["generation_id"] = "new"
+    (output_dir / "final_manifest.json").write_text(json.dumps(final), encoding="utf-8")
+    (output_dir / "clip_timeline_manifest.json").write_text(json.dumps(timeline), encoding="utf-8")
+
+    clip = results.detect_results(output_dir, "default")[0]
+
+    assert clip["result_state"] == "stale"
+    assert clip["video_valid"] is False
+    assert "manifests actifs" in clip["status_message"]
+
+
+def test_render_missing_when_timeline_exists_without_video(tmp_path):
+    output_dir = tmp_path / "project"
+    _make_project(output_dir)
+    final = json.loads((output_dir / "final_manifest.json").read_text(encoding="utf-8"))
+    final["clips"][0]["final_file"] = "missing.mp4"
+    (output_dir / "final_manifest.json").write_text(json.dumps(final), encoding="utf-8")
+
+    clip = results.detect_results(output_dir, "default")[0]
+
+    assert clip["result_state"] == "render_missing"
+    assert clip["video_valid"] is False
+    assert "manquant ou invalide" in clip["status_message"]
+
+
+def test_build_repair_rerender_command_uses_first_missing_stage(tmp_path):
+    metadata_path = tmp_path / "folder with spaces" / "metadata.json"
+
+    command = jobs.build_repair_rerender_command(
+        metadata_path,
+        2,
+        "cutting",
+        {"platform": "tiktok", "template": "creative_social", "music": "keep", "language": "en"},
+    )
+
+    assert command[:4] == [sys.executable, "-m", "src.pipeline.run", str(metadata_path)]
+    assert command[command.index("--from-stage") + 1] == "cutting"
+    assert command[command.index("--to-stage") + 1] == "export"
+    assert command[command.index("--rank") + 1] == "2"
+    assert "--resume" in command
+    assert "--force" in command
+    assert all(part != "" for part in command)
+
+
+def test_create_repair_rerender_job_persists_stage(monkeypatch, tmp_path):
+    _patch_job_dirs(monkeypatch, tmp_path)
+    output_dir = tmp_path / "project"
+    _make_project(output_dir)
+    parent_job = {"job_id": "parent", "project_name": "Project", "options": {"template": "creative_social"}}
+
+    job = jobs.create_repair_rerender_job(parent_job, output_dir, 1, "cutting")
+
+    assert job["job_type"] == "hook_rerender"
+    assert job["rerender_reason"] == "artifact_repair"
+    assert job["repair_from_stage"] == "cutting"
+    assert job["command"][job["command"].index("--from-stage") + 1] == "cutting"
+    assert (jobs.JOBS_DIR / job["job_id"] / "job.json").is_file()
 
 
 def _assert_no_viral_claims(text: str):
@@ -436,6 +895,10 @@ def test_sanitize_hook_rejects_empty_and_too_long():
         results.sanitize_hook_text("   ")
     with pytest.raises(ValueError, match="140"):
         results.sanitize_hook_text("x" * 141)
+    with pytest.raises(ValueError, match="autonome"):
+        results.sanitize_hook_text("amount of $100,000 !")
+    with pytest.raises(ValueError, match="autonome"):
+        results.sanitize_hook_text("because of what happened next")
 
 
 def test_build_hook_rerender_command_targets_templates_to_export(tmp_path):

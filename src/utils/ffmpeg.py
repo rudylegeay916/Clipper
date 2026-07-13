@@ -14,9 +14,13 @@ permet de traiter des streams de plusieurs heures sans probleme.
 """
 
 import json
+import os
 import shlex
 import shutil
 import subprocess
+import time
+import uuid
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Union
 
@@ -30,6 +34,10 @@ Arg = Union[str, Path, int, float]
 
 class FFmpegError(RuntimeError):
     """Erreur levee quand une commande ffmpeg/ffprobe echoue."""
+
+
+class MP4ValidationError(FFmpegError):
+    """Erreur levee quand un MP4 est structurellement invalide."""
 
 
 def _find_tool(tool: str) -> str:
@@ -106,6 +114,196 @@ def probe_media(path: Path | str) -> dict:
         ["-v", "error", "-show_format", "-show_streams", "-of", "json", path]
     )
     return json.loads(stdout)
+
+
+def _top_level_mp4_boxes(path: Path) -> list[dict]:
+    boxes = []
+    size = path.stat().st_size
+    offset = 0
+    with path.open("rb") as handle:
+        while offset < size:
+            handle.seek(offset)
+            header = handle.read(8)
+            if len(header) < 8:
+                raise MP4ValidationError(f"Bloc MP4 incomplet a l'offset {offset}")
+            box_size = int.from_bytes(header[:4], "big")
+            box_type = header[4:8].decode("latin-1", errors="replace")
+            header_size = 8
+            if box_size == 1:
+                extended = handle.read(8)
+                if len(extended) < 8:
+                    raise MP4ValidationError(f"Taille MP4 etendue incomplete pour {box_type}")
+                box_size = int.from_bytes(extended, "big")
+                header_size = 16
+            elif box_size == 0:
+                box_size = size - offset
+            if box_size < header_size:
+                raise MP4ValidationError(f"Taille MP4 invalide pour {box_type}")
+            end = offset + box_size
+            if end > size:
+                raise MP4ValidationError(
+                    f"Bloc MP4 {box_type} depasse la fin du fichier ({end} > {size})"
+                )
+            boxes.append({"type": box_type, "offset": offset, "size": box_size, "end": end})
+            offset = end
+    return boxes
+
+
+def validate_mp4(path: Path | str, require_audio: bool = False,
+                 full_decode_under_seconds: float = 180.0,
+                 allow_temporary: bool = False) -> dict:
+    """
+    Valide un MP4 final navigateur : structure, codecs, duree et decodage court.
+    Retourne les informations ffprobe utiles ou leve MP4ValidationError.
+    """
+    path = Path(path)
+    if not allow_temporary and (path.name.endswith((".part", ".tmp")) or ".rendering-" in path.name):
+        raise MP4ValidationError(f"Fichier temporaire refuse : {path.name}")
+    if not path.is_file() or path.stat().st_size <= 0:
+        raise MP4ValidationError(f"MP4 absent ou vide : {path}")
+
+    boxes = _top_level_mp4_boxes(path)
+    moov_count = sum(1 for box in boxes if box["type"] == "moov")
+    if moov_count != 1:
+        raise MP4ValidationError(f"MP4 invalide : {moov_count} blocs moov top-level")
+    if not any(box["type"] == "mdat" for box in boxes):
+        raise MP4ValidationError("MP4 invalide : bloc mdat manquant")
+
+    try:
+        probe = probe_media(path)
+    except FFmpegError as error:
+        raise MP4ValidationError(f"ffprobe refuse le MP4 : {error}") from error
+    streams = probe.get("streams", [])
+    video_streams = [s for s in streams if s.get("codec_type") == "video"]
+    audio_streams = [s for s in streams if s.get("codec_type") == "audio"]
+    if len(video_streams) != 1:
+        raise MP4ValidationError(f"MP4 invalide : {len(video_streams)} pistes video")
+    if require_audio and not audio_streams:
+        raise MP4ValidationError("MP4 invalide : piste audio attendue absente")
+
+    video = video_streams[0]
+    duration = float((probe.get("format") or {}).get("duration") or 0)
+    if duration <= 0:
+        raise MP4ValidationError("MP4 invalide : duree nulle")
+    if int(video.get("width") or 0) <= 0 or int(video.get("height") or 0) <= 0:
+        raise MP4ValidationError("MP4 invalide : dimensions video invalides")
+    if video.get("codec_name") != "h264":
+        raise MP4ValidationError(f"Codec video navigateur invalide : {video.get('codec_name')}")
+    if video.get("pix_fmt") != "yuv420p":
+        raise MP4ValidationError(f"Pixel format navigateur invalide : {video.get('pix_fmt')}")
+    if audio_streams and any(stream.get("codec_name") != "aac" for stream in audio_streams):
+        codecs = ", ".join(str(stream.get("codec_name")) for stream in audio_streams)
+        raise MP4ValidationError(f"Codec audio navigateur invalide : {codecs}")
+
+    if duration <= full_decode_under_seconds:
+        try:
+            run_ffmpeg(["-v", "error", "-xerror", "-i", path, "-f", "null", "-"])
+        except FFmpegError as error:
+            raise MP4ValidationError(f"Decodage complet MP4 impossible : {error}") from error
+    return {
+        "duration": duration,
+        "width": video.get("width"),
+        "height": video.get("height"),
+        "video_codec": video.get("codec_name"),
+        "audio_codec": audio_streams[0].get("codec_name") if audio_streams else None,
+        "moov_count": moov_count,
+        "boxes": boxes,
+    }
+
+
+def _wait_for_stable_file(path: Path) -> None:
+    first = path.stat().st_size
+    time.sleep(0.05)
+    second = path.stat().st_size
+    if first != second:
+        raise MP4ValidationError(f"Fichier encore en cours d'ecriture : {path}")
+
+
+def rendering_mp4_path(destination: Path | str) -> Path:
+    destination = Path(destination)
+    return destination.with_name(f"{destination.stem}.rendering-{uuid.uuid4().hex}.mp4")
+
+
+@contextmanager
+def mp4_render_lock(destination: Path | str):
+    destination = Path(destination)
+    lock_path = destination.with_name(f"{destination.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        fd = os.open(str(lock_path), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError as error:
+        raise RuntimeError(f"Rendu deja en cours pour {destination}") from error
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as handle:
+            handle.write(str(os.getpid()))
+        yield
+    finally:
+        lock_path.unlink(missing_ok=True)
+
+
+def replace_mp4_atomically(temp_path: Path | str, destination: Path | str,
+                           require_audio: bool = False,
+                           validate: bool = True) -> None:
+    temp_path = Path(temp_path)
+    destination = Path(destination)
+    if temp_path.resolve() == destination.resolve():
+        raise ValueError("Le fichier temporaire MP4 doit differer de la destination")
+    if not temp_path.is_file():
+        raise MP4ValidationError(f"Fichier temporaire MP4 introuvable : {temp_path}")
+    try:
+        _wait_for_stable_file(temp_path)
+        if validate:
+            validate_mp4(temp_path, require_audio=require_audio, allow_temporary=True)
+        os.replace(temp_path, destination)
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def run_ffmpeg_atomic(args_without_output: list[Arg], destination: Path | str,
+                      require_audio: bool = False,
+                      validate: bool = True,
+                      timeout: float | None = None) -> Path:
+    destination = Path(destination)
+    temp_path = rendering_mp4_path(destination)
+    if temp_path.resolve() == destination.resolve():
+        raise ValueError("Sortie FFmpeg temporaire identique a la destination")
+    try:
+        run_ffmpeg(list(args_without_output) + [temp_path], timeout=timeout)
+        replace_mp4_atomically(temp_path, destination, require_audio=require_audio,
+                               validate=validate)
+        return destination
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def copy_mp4_atomically(source: Path | str, destination: Path | str,
+                       require_audio: bool = False,
+                       validate: bool = True) -> Path:
+    source = Path(source)
+    destination = Path(destination)
+    if source.resolve() == destination.resolve():
+        raise ValueError("Copie MP4 refusee : source et destination identiques")
+    temp_path = rendering_mp4_path(destination)
+    try:
+        temp_path.parent.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(source, temp_path)
+        replace_mp4_atomically(temp_path, destination, require_audio=require_audio,
+                               validate=validate)
+        return destination
+    except Exception:
+        temp_path.unlink(missing_ok=True)
+        raise
+
+
+def quarantine_invalid_mp4(path: Path | str) -> Path | None:
+    path = Path(path)
+    if not path.is_file():
+        return None
+    target = path.with_name(f"{path.name}.invalid-{int(time.time())}")
+    os.replace(path, target)
+    return target
 
 
 def format_filter_path(path: Path | str) -> str:

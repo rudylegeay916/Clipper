@@ -209,6 +209,66 @@ def build_hook_rerender_command(metadata_path: str | Path, rank: int,
     return command
 
 
+def build_timing_rerender_command(metadata_path: str | Path, rank: int,
+                                  options: dict | None = None) -> list[str]:
+    opts = dict(options or {})
+    command = [
+        sys.executable,
+        "-m",
+        "src.pipeline.run",
+        str(metadata_path),
+        "--resume",
+        "--force",
+        "--from-stage",
+        "cutting",
+        "--to-stage",
+        "export",
+        "--rank",
+        str(rank),
+    ]
+    for flag, key in (
+        ("--platform", "platform"),
+        ("--template", "template"),
+        ("--music", "music"),
+        ("--language", "language"),
+    ):
+        value = opts.get(key)
+        if value and value != "auto":
+            command.extend([flag, str(value)])
+    return command
+
+
+def build_repair_rerender_command(metadata_path: str | Path, rank: int, from_stage: str,
+                                  options: dict | None = None) -> list[str]:
+    opts = dict(options or {})
+    allowed_stages = {stage_id for stage_id, _label in PIPELINE_STAGE_LABELS}
+    stage = from_stage if from_stage in allowed_stages else "templates"
+    command = [
+        sys.executable,
+        "-m",
+        "src.pipeline.run",
+        str(metadata_path),
+        "--resume",
+        "--force",
+        "--from-stage",
+        stage,
+        "--to-stage",
+        "export",
+        "--rank",
+        str(rank),
+    ]
+    for flag, key in (
+        ("--platform", "platform"),
+        ("--template", "template"),
+        ("--music", "music"),
+        ("--language", "language"),
+    ):
+        value = opts.get(key)
+        if value and value != "auto":
+            command.extend([flag, str(value)])
+    return command
+
+
 def job_path(job_id: str) -> Path:
     return JOBS_DIR / job_id / "job.json"
 
@@ -394,6 +454,98 @@ def create_hook_rerender_job(parent_job: dict, output_dir: str | Path, clip_rank
     return job
 
 
+def create_timing_rerender_job(parent_job: dict, output_dir: str | Path, clip_rank: int,
+                               options: dict | None = None) -> dict:
+    output_dir = Path(output_dir)
+    metadata_path = output_dir / "metadata.json"
+    if not metadata_path.is_file():
+        raise FileNotFoundError(f"metadata.json introuvable : {metadata_path}")
+    existing = find_active_hook_rerender(output_dir, clip_rank)
+    if existing:
+        return existing
+
+    job_id = new_job_id()
+    job_dir, _upload_dir = ensure_job_dirs(job_id)
+    command = build_timing_rerender_command(metadata_path, clip_rank, options or parent_job.get("options", {}))
+    job = {
+        "job_id": job_id,
+        "job_type": "hook_rerender",
+        "rerender_reason": "manual_timing",
+        "parent_project": str(output_dir),
+        "parent_job_id": parent_job.get("job_id"),
+        "project_name": parent_job.get("project_name", output_dir.name),
+        "project_output_dir": str(output_dir),
+        "source": str(metadata_path),
+        "source_type": "metadata",
+        "campaign_profile": parent_job.get("campaign_profile", "default"),
+        "clip_rank": int(clip_rank),
+        "requested_hook": None,
+        "options": dict(options or parent_job.get("options", {})),
+        "created_at": utc_now(),
+        "started_at": None,
+        "completed_at": None,
+        "status": "pending",
+        "pid": None,
+        "error": None,
+        "pipeline_manifest_path": str(output_dir / "pipeline_manifest.json"),
+        "command": command,
+        "log_path": str(job_dir / "pipeline.log"),
+        "backup": _backup_rerender_targets(job_dir, output_dir, clip_rank),
+        "restored": False,
+    }
+    save_job(job)
+    return job
+
+
+def create_repair_rerender_job(parent_job: dict, output_dir: str | Path, clip_rank: int,
+                               from_stage: str, options: dict | None = None) -> dict:
+    output_dir = Path(output_dir)
+    metadata_path = output_dir / "metadata.json"
+    if not metadata_path.is_file():
+        raise FileNotFoundError(f"metadata.json introuvable : {metadata_path}")
+    existing = find_active_hook_rerender(output_dir, clip_rank)
+    if existing:
+        return existing
+
+    job_id = new_job_id()
+    job_dir, _upload_dir = ensure_job_dirs(job_id)
+    command = build_repair_rerender_command(
+        metadata_path,
+        clip_rank,
+        from_stage,
+        options or parent_job.get("options", {}),
+    )
+    job = {
+        "job_id": job_id,
+        "job_type": "hook_rerender",
+        "rerender_reason": "artifact_repair",
+        "repair_from_stage": from_stage,
+        "parent_project": str(output_dir),
+        "parent_job_id": parent_job.get("job_id"),
+        "project_name": parent_job.get("project_name", output_dir.name),
+        "project_output_dir": str(output_dir),
+        "source": str(metadata_path),
+        "source_type": "metadata",
+        "campaign_profile": parent_job.get("campaign_profile", "default"),
+        "clip_rank": int(clip_rank),
+        "requested_hook": None,
+        "options": dict(options or parent_job.get("options", {})),
+        "created_at": utc_now(),
+        "started_at": None,
+        "completed_at": None,
+        "status": "pending",
+        "pid": None,
+        "error": None,
+        "pipeline_manifest_path": str(output_dir / "pipeline_manifest.json"),
+        "command": command,
+        "log_path": str(job_dir / "pipeline.log"),
+        "backup": _backup_rerender_targets(job_dir, output_dir, clip_rank),
+        "restored": False,
+    }
+    save_job(job)
+    return job
+
+
 def start_hook_rerender_job(job: dict) -> dict:
     log_path = Path(job["log_path"])
     log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -526,7 +678,7 @@ def _hook_rerender_succeeded(job: dict) -> tuple[bool, str | None]:
         return False, "final_manifest.json ne contient pas le clip cible."
     if final_entry.get("fallback"):
         return False, f"Le rendu final est tombe en fallback : {final_entry['fallback']}"
-    if final_entry.get("hook_text") != job.get("requested_hook"):
+    if job.get("requested_hook") and final_entry.get("hook_text") != job.get("requested_hook"):
         return False, "Le manifest final ne contient pas le hook demande."
     final_path = output_dir / "final" / final_entry.get("final_file", "")
     if not final_path.is_file():
