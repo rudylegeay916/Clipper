@@ -63,10 +63,10 @@ def _called_ids(calls):
 # ---------------------------------------------------------------------------
 
 def test_stage_order_and_registry():
-    """Les 18 etapes (12 + Creative Engine + popularite source + storyboard)."""
+    """Les 19 etapes (12 + Creative Engine + popularite + storyboard + series)."""
     assert STAGE_IDS == ["ingestion", "preview", "transcription",
                          "creative_routing", "detection", "source_popularity",
-                         "scoring", "story_planning", "cutting",
+                         "scoring", "story_planning", "series_planning", "cutting",
                          "reframe", "speech_decision", "subtitles",
                          "creative_hooks", "templates", "creative_music",
                          "metadata", "visibility", "export"]
@@ -106,7 +106,9 @@ def test_options_forwarded(mocked_runners):
                            "template": "punchy_short",
                            "reframe_method": "center", "stability": "follow",
                            "language": "fr", "popularity_mode": "popular",
-                           "story_mode": "multi_scene", "story_max_segments": 4})
+                           "story_mode": "multi_scene", "story_max_segments": 4,
+                           "series_mode": "forced", "series_parts": 3,
+                           "series_duration": "standard"})
     options = dict(calls[0][1])
     assert options["top"] == 3
     assert options["platform"] == "all"
@@ -118,6 +120,18 @@ def test_options_forwarded(mocked_runners):
     assert options["popularity_mode"] == "popular"
     assert options["story_mode"] == "multi_scene"
     assert options["story_max_segments"] == 4
+    assert options["series_mode"] == "forced"
+    assert options["series_parts"] == 3
+    assert options["series_duration"] == "standard"
+
+
+def test_series_parts_limits_rendered_top_when_top_omitted(mocked_runners):
+    calls, _ = mocked_runners
+
+    run_pipeline("x.mp4", {"resume": False, "series_mode": "forced", "series_parts": 3})
+
+    options = dict(calls[0][1])
+    assert options["top"] == 3
 
 
 def test_dry_run_executes_nothing(mocked_runners, capsys):

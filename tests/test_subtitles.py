@@ -10,7 +10,13 @@ import shutil
 
 import pytest
 
-from src.subtitles.burn import burn_single_clip, burn_subtitles, get_style, load_styles
+from src.subtitles.burn import (
+    _merge_rank_entries as merge_subtitle_rank_entries,
+    burn_single_clip,
+    burn_subtitles,
+    get_style,
+    load_styles,
+)
 from src.subtitles.generate_ass import (
     build_ass,
     escape_ass_text,
@@ -75,6 +81,22 @@ def test_escape_ass_text():
     """Les accolades seraient interpretees comme tags ASS."""
     assert escape_ass_text("mot {tag} fin") == r"mot \{tag\} fin"
     assert escape_ass_text("l'apostrophe passe") == "l'apostrophe passe"
+
+
+def test_subtitles_rank_merge_preserves_other_ranks():
+    existing = [
+        {"rank": 1, "subtitled_file": "old_rank_1.mp4"},
+        {"rank": 2, "subtitled_file": "rank_2.mp4"},
+        {"rank": 3, "subtitled_file": "rank_3.mp4"},
+    ]
+    updated = [{"rank": 1, "subtitled_file": "new_rank_1.mp4"}]
+
+    merged = merge_subtitle_rank_entries(existing, updated, replaced_rank=1)
+
+    assert [clip["rank"] for clip in merged] == [1, 2, 3]
+    assert merged[0]["subtitled_file"] == "new_rank_1.mp4"
+    assert merged[1]["subtitled_file"] == "rank_2.mp4"
+    assert merged[2]["subtitled_file"] == "rank_3.mp4"
 
 
 # ---------------------------------------------------------------------------
@@ -235,6 +257,26 @@ def test_hold_is_truncated_when_next_group_starts(bold_classic):
 
     assert events[0]["end"] < 4.30
     assert events[0]["end"] <= events[1]["start"]
+
+
+def test_last_event_is_clamped_to_clip_duration(bold_classic):
+    words = _words([
+        ("last", 53.60, 53.90),
+        ("word", 53.91, 54.00),
+    ])
+    events = _dialogue_events(
+        build_ass(
+            group_words(words, max_words_per_line=4),
+            bold_classic,
+            karaoke=True,
+            hold=0.25,
+            clip_duration=54.02,
+        )
+    )
+
+    assert events
+    assert max(event["end"] for event in events) <= 54.02
+    assert all(event["start"] < event["end"] for event in events)
 
 
 def test_only_one_group_text_active_at_any_timestamp(bold_classic):

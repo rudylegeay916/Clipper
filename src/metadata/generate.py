@@ -30,6 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from src.ingestion.ingest import ingest
+from src.series.metadata import apply_episode_metadata
 from src.utils.config import load_config
 from src.utils.logging_setup import get_logger
 
@@ -366,6 +367,22 @@ def _merge_rank_entries(existing: list[dict], updated: list[dict],
     return [by_rank[rank] for rank in sorted(by_rank)]
 
 
+def _series_episodes_by_rank(output_dir: Path) -> dict[int, dict]:
+    path = output_dir / "series_plan_manifest.json"
+    if not path.is_file():
+        return {}
+    with open(path, encoding="utf-8") as f:
+        manifest = json.load(f)
+    if not manifest.get("series_created"):
+        return {}
+    episodes = {}
+    for episode in manifest.get("episodes", []):
+        item = dict(episode)
+        item["series_id"] = manifest.get("series_id")
+        episodes[int(item["rank"])] = item
+    return episodes
+
+
 def generate_posts(source: str, force: bool = False, top: int | None = None,
                    rank: int | None = None) -> Path:
     """
@@ -428,6 +445,7 @@ def generate_posts(source: str, force: bool = False, top: int | None = None,
                           for c in json.load(f)["clips"]}
 
     final_clips = final_manifest.get("clips", [])
+    series_by_rank = _series_episodes_by_rank(output_dir)
     if rank:
         final_clips = [clip for clip in final_clips
                        if int(clip.get("rank", 0)) == int(rank)]
@@ -461,7 +479,7 @@ def generate_posts(source: str, force: bool = False, top: int | None = None,
         if not keywords:
             warnings.append("aucun mot-cle detecte (clip tres court ?)")
 
-        posts.append({
+        post = {
             "final_file": clip["final_file"],
             "rank": clip["rank"],
             "score": clip["score"],
@@ -475,7 +493,11 @@ def generate_posts(source: str, force: bool = False, top: int | None = None,
             "detected_keywords": keywords,
             "language": language,
             "warnings": warnings,
-        })
+        }
+        episode = series_by_rank.get(int(clip["rank"]))
+        if episode:
+            post = apply_episode_metadata(post, episode)
+        posts.append(post)
         logger.info("Post #%d [%s] : %s", clip["rank"], platform, titles[0][:60])
 
     # --- Ecriture ---

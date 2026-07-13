@@ -349,7 +349,8 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
         play_res = (clip.get("width", 1080), clip.get("height", 1920))
         karaoke = True
         content = build_ass(groups, style, karaoke=True, play_res=play_res,
-                            lead_in=lead_in, hold=hold)
+                            lead_in=lead_in, hold=hold,
+                            clip_duration=output_duration)
         events = extract_dialogue_events(content)
         flat_words = [word for group in groups for word in group]
         absolute_words = [
@@ -382,7 +383,8 @@ def burn_subtitles(source: str, force: bool = False, style_name: str | None = No
             )
             karaoke = False
             content = build_ass(groups, style, karaoke=False, play_res=play_res,
-                                lead_in=lead_in, hold=hold)
+                                lead_in=lead_in, hold=hold,
+                                clip_duration=output_duration)
             validate_ass_events(extract_dialogue_events(content), output_duration)
             ass_path.write_text(content, encoding="utf-8-sig")
             burn_single_clip(

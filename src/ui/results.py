@@ -56,6 +56,7 @@ def load_project_manifests(output_dir: Path) -> dict:
         "pipeline": load_json(output_dir / "pipeline_manifest.json"),
         "source_popularity": load_json(output_dir / "source_popularity_manifest.json"),
         "story_plan": load_json(output_dir / "story_plan_manifest.json"),
+        "series_plan": load_json(output_dir / "series_plan_manifest.json"),
         "candidates": load_json(output_dir / "candidates.json"),
         "clips_manifest": load_json(output_dir / "clips_manifest.json"),
         "vertical": load_json(output_dir / "vertical_manifest.json"),
@@ -163,6 +164,8 @@ def build_result_state(output_dir: Path, rank: int, manifests: dict | None = Non
     rank = int(rank)
     candidates_by_rank = _by_rank(manifests["candidates"].get("candidates", []))
     story_by_rank = _by_rank(manifests["story_plan"].get("clips", []))
+    series_manifest = manifests.get("series_plan", {})
+    series_by_rank = _by_rank(series_manifest.get("episodes", []))
     cuts_by_rank = _by_rank(manifests["clips_manifest"].get("clips", []))
     vertical_by_rank = _by_rank(manifests["vertical"].get("clips", []))
     subtitles_by_rank = _by_rank(manifests["subtitles"].get("clips", []))
@@ -249,6 +252,7 @@ def _result_ranks(manifests: dict) -> list[int]:
     for key, item_key in (
         ("candidates", "candidates"),
         ("story_plan", "clips"),
+        ("series_plan", "episodes"),
         ("clips_manifest", "clips"),
         ("vertical", "clips"),
         ("subtitles", "clips"),
@@ -302,6 +306,8 @@ def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[
     visibility_by_rank = _by_rank(manifests["visibility"].get("clips", []))
     candidates_by_rank = _by_rank(manifests["candidates"].get("candidates", []))
     story_by_rank = _by_rank(manifests["story_plan"].get("clips", []))
+    series_manifest = manifests.get("series_plan", {})
+    series_by_rank = _by_rank(series_manifest.get("episodes", []))
     creative_clips = manifests["creative"].get("clips", {})
     exports = manifests["exports"].get("exports", [])
 
@@ -320,6 +326,7 @@ def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[
         visibility = visibility_by_rank.get(rank, {})
         candidate = candidates_by_rank.get(rank, {})
         story_plan = story_by_rank.get(rank, {})
+        series_episode = series_by_rank.get(rank, {})
         timeline = state.get("timeline") or {}
         popularity_badge, popularity_explanation = _popularity_badge(
             manifests["source_popularity"],
@@ -347,6 +354,15 @@ def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[
             "story_segments": story_plan.get("source_segments") or clip.get("story_segments", []),
             "story_plan_score": story_plan.get("story_plan_score"),
             "story_topic": story_plan.get("story_topic"),
+            "series_created": bool(series_manifest.get("series_created")),
+            "series_id": series_manifest.get("series_id"),
+            "series_total_parts": series_manifest.get("total_parts"),
+            "series_publication_order": series_manifest.get("publication_order", []),
+            "series_part_number": series_episode.get("part_number"),
+            "series_episode_role": series_episode.get("episode_role"),
+            "series_episode_title": series_episode.get("episode_title"),
+            "series_cliffhanger": series_episode.get("cliffhanger_text"),
+            "series_open_loop": series_episode.get("open_loop"),
             "profile": creative.get("clip_profile") or clip.get("platform_fit") or "auto",
             "creative_score": creative.get("creative_score"),
             "visibility_score": visibility.get("visibility_score"),

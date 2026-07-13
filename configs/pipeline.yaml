@@ -15,6 +15,8 @@ pipeline:
     detection: true
     source_popularity: true
     scoring: true
+    story_planning: true
+    series_planning: true
     cutting: true
     reframe: true
     subtitles: true
@@ -33,6 +35,12 @@ pipeline:
     stability: null           # null = config.yaml vertical.stability
     language: null            # null = detection automatique
     popularity_mode: auto     # off | auto | balanced | popular | original
+    story_mode: auto          # auto | contiguous | multi_scene
+    story_max_segments: 4     # 2..6
+    series_mode: off          # off | auto | forced
+    series_parts: 3           # 2..10
+    series_duration: standard # short | standard | long | custom
+    series_custom_duration: null
 
   behavior:
     resume: true              # Sauter les etapes dont les sorties existent deja

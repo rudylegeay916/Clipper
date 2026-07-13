@@ -219,8 +219,9 @@ def validate_ass_events(events: list[dict], duration: float,
 
 
 def build_ass(groups: list[list[dict]], style: dict, karaoke: bool = True,
-              play_res: tuple[int, int] = (1080, 1920),
-              lead_in: float = 0.08, hold: float = 0.15) -> str:
+               play_res: tuple[int, int] = (1080, 1920),
+              lead_in: float = 0.08, hold: float = 0.15,
+              clip_duration: float | None = None) -> str:
     """
     Construit le contenu complet du fichier ASS.
     karaoke=True  : un evenement par mot actif (highlight dynamique) ;
@@ -250,6 +251,8 @@ def build_ass(groups: list[list[dict]], style: dict, karaoke: bool = True,
                 group[-1]["end"] + SUBTITLE_GAP,
             )
             display_end = min(display_end, next_start - SUBTITLE_GAP)
+        if clip_duration is not None:
+            display_end = min(display_end, float(clip_duration))
         if display_end <= display_start:
             continue
         previous_display_end = display_end

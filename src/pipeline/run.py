@@ -58,6 +58,8 @@ STAGES = [
      "outputs": ["candidates.json"]},
     {"id": "story_planning", "label": "Story planning",        "essential": True,
      "outputs": ["story_plan_manifest.json"]},
+    {"id": "series_planning", "label": "Series planning",      "essential": False,
+     "outputs": ["series_plan_manifest.json"]},
     {"id": "cutting",       "label": "DÃ©coupage",              "essential": True,
      "outputs": ["clips_manifest.json"]},
     {"id": "reframe",       "label": "Reframe vertical",       "essential": False,
@@ -134,6 +136,25 @@ def _run_story_planning(ctx):
         mode=ctx["options"].get("story_mode"),
         max_segments=ctx["options"].get("story_max_segments"),
         platform=ctx["options"].get("platform", "recommended"),
+    )
+
+
+def _run_series_planning(ctx):
+    from src.series.planner import plan_series
+    platforms = ctx["options"].get("platform")
+    if isinstance(platforms, str):
+        target_platforms = [platforms]
+    else:
+        target_platforms = ["recommended"]
+    return plan_series(
+        ctx["metadata_path"],
+        force=ctx["force"],
+        mode=ctx["options"].get("series_mode"),
+        requested_parts=ctx["options"].get("series_parts"),
+        duration_mode=ctx["options"].get("series_duration"),
+        custom_duration=ctx["options"].get("series_custom_duration"),
+        rank=ctx["options"].get("rank"),
+        target_platforms=target_platforms,
     )
 
 
@@ -218,7 +239,7 @@ RUNNERS = {
     "detection": _run_detection,
     "source_popularity": _run_source_popularity,
     "scoring": _run_scoring, "story_planning": _run_story_planning,
-    "cutting": _run_cutting,
+    "series_planning": _run_series_planning, "cutting": _run_cutting,
     "reframe": _run_reframe,
     "speech_decision": _run_speech_decision,
     "subtitles": _run_subtitles,
@@ -252,6 +273,12 @@ def merge_options(cli_options: dict) -> dict:
     for key, value in cli_options.items():
         if value is not None:
             options[key] = value
+    if (
+        options.get("series_mode") in {"auto", "forced"}
+        and options.get("top") is None
+        and options.get("series_parts")
+    ):
+        options["top"] = int(options["series_parts"])
     return options
 
 
@@ -640,7 +667,7 @@ def _dry_run(source: str, options: dict, from_index: int, to_index: int) -> dict
                         "configs/scoring.yaml", "configs/subtitle_styles.yaml",
                         "configs/templates.yaml", "configs/export_profiles.yaml",
                         "configs/visibility.yaml", "configs/source_popularity.yaml",
-                        "configs/story_builder.yaml"):
+                        "configs/story_builder.yaml", "configs/series_planner.yaml"):
         if not (PROJECT_ROOT / config_file).is_file():
             problems.append(f"config manquante : {config_file}")
     plan = []
@@ -707,6 +734,18 @@ def main() -> int:
     parser.add_argument("--story-max-segments", dest="story_max_segments",
                         type=int, default=None, choices=[2, 3, 4, 5, 6],
                         help="Maximum number of source segments in multi-scene clips")
+    parser.add_argument("--series-mode", dest="series_mode", default=None,
+                        choices=["off", "auto", "forced"],
+                        help="Series mode: off | auto | forced")
+    parser.add_argument("--series-parts", dest="series_parts",
+                        type=int, default=None, choices=list(range(2, 11)),
+                        help="Requested number of parts in a series")
+    parser.add_argument("--series-duration", dest="series_duration", default=None,
+                        choices=["short", "standard", "long", "custom"],
+                        help="Target duration profile per series part")
+    parser.add_argument("--series-custom-duration", dest="series_custom_duration",
+                        type=float, default=None,
+                        help="Custom target duration in seconds when --series-duration custom")
     parser.add_argument("--force-popularity", dest="force_popularity",
                         action="store_true", default=None,
                         help="Refresh source_popularity_manifest.json even when resume is enabled")
