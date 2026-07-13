@@ -59,6 +59,9 @@ class _FakeStreamlit:
     def write(self, *values):
         self.messages.append(("write", " ".join(str(v) for v in values)))
 
+    def caption(self, text):
+        self.messages.append(("caption", str(text)))
+
     def info(self, text):
         self.messages.append(("info", str(text)))
 
@@ -122,6 +125,8 @@ def test_build_pipeline_command_uses_sys_executable_and_options():
             "source_rights": "owned",
             "language": "en",
             "popularity_mode": "popular",
+            "story_mode": "multi_scene",
+            "story_max_segments": 4,
             "resume": True,
             "force": False,
             "skip_preview": True,
@@ -135,6 +140,8 @@ def test_build_pipeline_command_uses_sys_executable_and_options():
     assert "--resume" in command
     assert "--popularity-mode" in command
     assert "popular" in command
+    assert command[command.index("--story-mode") + 1] == "multi_scene"
+    assert command[command.index("--story-max-segments") + 1] == "4"
 
 
 @pytest.mark.parametrize("label,mode", [
@@ -947,6 +954,81 @@ def test_create_hook_rerender_job_is_persistent_and_blocks_duplicate(monkeypatch
     assert job["log_path"].endswith("pipeline.log")
     assert (jobs.JOBS_DIR / job["job_id"] / "job.json").is_file()
     assert (jobs.JOBS_DIR / job["job_id"] / "backup" / "creative_manifest.json").is_file()
+
+
+def test_save_manual_storyboard_preserves_other_ranks_and_maps_timeline(tmp_path):
+    output_dir = tmp_path / "project"
+    output_dir.mkdir()
+    (output_dir / "story_plan_manifest.json").write_text(
+        json.dumps({
+            "clips": [
+                {"rank": 1, "assembly_mode": "contiguous", "source_segments": []},
+                {"rank": 2, "assembly_mode": "contiguous", "source_segments": []},
+            ],
+        }),
+        encoding="utf-8",
+    )
+
+    entry = results.save_manual_storyboard(
+        output_dir,
+        1,
+        [
+            {"order": 2, "role": "payoff", "source_start_seconds": 40, "source_end_seconds": 44,
+             "source_text": "the result happens"},
+            {"order": 1, "role": "context", "source_start_seconds": 10, "source_end_seconds": 13,
+             "source_text": "first context"},
+        ],
+        source_duration_seconds=100,
+    )
+    manifest = json.loads((output_dir / "story_plan_manifest.json").read_text(encoding="utf-8"))
+
+    assert entry["assembly_mode"] == "multi_scene"
+    assert [clip["rank"] for clip in manifest["clips"]] == [1, 2]
+    assert manifest["clips"][0]["source_segments"][0]["role"] == "context"
+    assert manifest["clips"][0]["output_timeline"][0]["output_start"] == 0.0
+    assert manifest["clips"][0]["output_timeline"][1]["output_start"] == 3.0
+    assert manifest["clips"][1]["rank"] == 2
+
+
+def test_build_storyboard_rerender_command_targets_cutting_to_export(tmp_path):
+    metadata_path = tmp_path / "folder with spaces" / "metadata.json"
+    command = jobs.build_storyboard_rerender_command(
+        metadata_path,
+        1,
+        {
+            "platform": "shorts",
+            "template": "creative_social",
+            "music": "keep",
+            "language": "en",
+            "story_mode": "multi_scene",
+            "story_max_segments": 4,
+        },
+    )
+
+    assert command[:4] == [sys.executable, "-m", "src.pipeline.run", str(metadata_path)]
+    assert command[command.index("--from-stage") + 1] == "cutting"
+    assert command[command.index("--to-stage") + 1] == "export"
+    assert command[command.index("--rank") + 1] == "1"
+    assert "--resume" in command
+    assert "--force" in command
+    assert command[command.index("--story-mode") + 1] == "multi_scene"
+    assert command[command.index("--story-max-segments") + 1] == "4"
+
+
+def test_create_storyboard_rerender_job_is_rank_scoped(monkeypatch, tmp_path):
+    _patch_job_dirs(monkeypatch, tmp_path)
+    output_dir = tmp_path / "project"
+    _make_project(output_dir)
+    parent_job = {"job_id": "parent", "project_name": "Project", "options": {"platform": "shorts"}}
+
+    job = jobs.create_storyboard_rerender_job(parent_job, output_dir, 1)
+
+    assert job["job_type"] == "hook_rerender"
+    assert job["rerender_reason"] == "manual_storyboard"
+    assert job["clip_rank"] == 1
+    assert job["command"][job["command"].index("--from-stage") + 1] == "cutting"
+    assert job["command"][job["command"].index("--rank") + 1] == "1"
+    assert (jobs.JOBS_DIR / job["job_id"] / "job.json").is_file()
 
 
 def test_start_hook_rerender_job_uses_popen_without_shell(monkeypatch, tmp_path):

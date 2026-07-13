@@ -55,6 +55,7 @@ def load_project_manifests(output_dir: Path) -> dict:
         "metadata": load_json(output_dir / "metadata.json"),
         "pipeline": load_json(output_dir / "pipeline_manifest.json"),
         "source_popularity": load_json(output_dir / "source_popularity_manifest.json"),
+        "story_plan": load_json(output_dir / "story_plan_manifest.json"),
         "candidates": load_json(output_dir / "candidates.json"),
         "clips_manifest": load_json(output_dir / "clips_manifest.json"),
         "vertical": load_json(output_dir / "vertical_manifest.json"),
@@ -161,6 +162,7 @@ def build_result_state(output_dir: Path, rank: int, manifests: dict | None = Non
     manifests = manifests or load_project_manifests(output_dir)
     rank = int(rank)
     candidates_by_rank = _by_rank(manifests["candidates"].get("candidates", []))
+    story_by_rank = _by_rank(manifests["story_plan"].get("clips", []))
     cuts_by_rank = _by_rank(manifests["clips_manifest"].get("clips", []))
     vertical_by_rank = _by_rank(manifests["vertical"].get("clips", []))
     subtitles_by_rank = _by_rank(manifests["subtitles"].get("clips", []))
@@ -246,6 +248,7 @@ def _result_ranks(manifests: dict) -> list[int]:
     ranks: set[int] = set()
     for key, item_key in (
         ("candidates", "candidates"),
+        ("story_plan", "clips"),
         ("clips_manifest", "clips"),
         ("vertical", "clips"),
         ("subtitles", "clips"),
@@ -298,6 +301,7 @@ def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[
     posts_by_rank = _by_rank(posts)
     visibility_by_rank = _by_rank(manifests["visibility"].get("clips", []))
     candidates_by_rank = _by_rank(manifests["candidates"].get("candidates", []))
+    story_by_rank = _by_rank(manifests["story_plan"].get("clips", []))
     creative_clips = manifests["creative"].get("clips", {})
     exports = manifests["exports"].get("exports", [])
 
@@ -315,6 +319,7 @@ def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[
         creative = creative_clips.get(str(rank), {})
         visibility = visibility_by_rank.get(rank, {})
         candidate = candidates_by_rank.get(rank, {})
+        story_plan = story_by_rank.get(rank, {})
         timeline = state.get("timeline") or {}
         popularity_badge, popularity_explanation = _popularity_badge(
             manifests["source_popularity"],
@@ -338,6 +343,10 @@ def detect_results(output_dir: Path, campaign_profile: str = "default") -> list[
             "first_text": " ".join((candidate.get("text") or "").split()[:8]),
             "last_text": " ".join((candidate.get("text") or "").split()[-8:]),
             "quality_gate_reasons": candidate.get("quality_gate_reasons", []),
+            "assembly_mode": story_plan.get("assembly_mode") or clip.get("assembly_mode", "contiguous"),
+            "story_segments": story_plan.get("source_segments") or clip.get("story_segments", []),
+            "story_plan_score": story_plan.get("story_plan_score"),
+            "story_topic": story_plan.get("story_topic"),
             "profile": creative.get("clip_profile") or clip.get("platform_fit") or "auto",
             "creative_score": creative.get("creative_score"),
             "visibility_score": visibility.get("visibility_score"),
@@ -452,6 +461,99 @@ def save_manual_timing(output_dir: Path, rank: int, start_seconds: float,
         "updated_at": utc_now(),
     }
     clips[int(rank)] = entry
+    manifest["clips"] = [clips[key] for key in sorted(clips)]
+    path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
+    return entry
+
+
+def save_manual_storyboard(output_dir: Path, rank: int, segments: list[dict],
+                           source_duration_seconds: float | None = None) -> dict:
+    output_dir = Path(output_dir)
+    rank = int(rank)
+    cleaned = []
+    output_timeline = []
+    cursor = 0.0
+    ordered_segments = sorted(
+        segments,
+        key=lambda item: int(item.get("order") or 0) if isinstance(item, dict) else 0,
+    )
+    for index, segment in enumerate(ordered_segments, start=1):
+        start = float(segment.get("source_start_seconds", segment.get("source_start", 0)))
+        end = float(segment.get("source_end_seconds", segment.get("source_end", 0)))
+        if start < 0:
+            raise ValueError("Le debut d'un segment doit etre superieur ou egal a 0.")
+        if end <= start:
+            raise ValueError("Chaque segment doit avoir une fin strictement superieure au debut.")
+        if source_duration_seconds is not None and end > float(source_duration_seconds):
+            raise ValueError("Un segment depasse la duree de la source.")
+        duration = round(end - start, 3)
+        text = " ".join(str(segment.get("source_text", "")).split())
+        role = str(segment.get("role") or "evidence")
+        story_segment = {
+            "segment_id": str(segment.get("segment_id") or f"manual_{rank}_{index}"),
+            "source_start_seconds": round(start, 3),
+            "source_end_seconds": round(end, 3),
+            "duration_seconds": duration,
+            "source_text": text,
+            "role": role,
+            "importance_score": float(segment.get("importance_score", 80.0) or 80.0),
+            "narrative_score": float(segment.get("narrative_score", 80.0) or 80.0),
+            "visual_score": float(segment.get("visual_score", 80.0) or 80.0),
+            "audio_score": float(segment.get("audio_score", 80.0) or 80.0),
+            "popularity_score": float(segment.get("popularity_score", 0.0) or 0.0),
+            "topic_id": str(segment.get("topic_id") or "manual"),
+            "entities": list(segment.get("entities") or []),
+            "preceding_context": str(segment.get("preceding_context") or ""),
+            "following_context": str(segment.get("following_context") or ""),
+            "reasons": list(segment.get("reasons") or ["manual_storyboard"]),
+            "warnings": list(segment.get("warnings") or []),
+        }
+        cleaned.append(story_segment)
+        output_timeline.append({
+            "source_start": story_segment["source_start_seconds"],
+            "source_end": story_segment["source_end_seconds"],
+            "output_start": round(cursor, 3),
+            "output_end": round(cursor + duration, 3),
+            "source_text": text,
+            "role": role,
+        })
+        cursor += duration
+
+    if not cleaned:
+        raise ValueError("Le storyboard doit contenir au moins un segment.")
+    if len(cleaned) > 6:
+        raise ValueError("Le storyboard doit contenir 6 segments maximum.")
+
+    path = output_dir / "story_plan_manifest.json"
+    manifest = load_json(path) or {"clips": []}
+    clips = {int(item["rank"]): item for item in manifest.get("clips", []) if "rank" in item}
+    mode = "multi_scene" if len(cleaned) >= 2 else "contiguous"
+    entry = {
+        "rank": rank,
+        "assembly_mode": mode,
+        "target_platform": "manual",
+        "target_duration": round(cursor, 3),
+        "source_segments": cleaned,
+        "output_timeline": output_timeline,
+        "story_topic": cleaned[0].get("topic_id", "manual"),
+        "opening_text": cleaned[0].get("source_text", ""),
+        "ending_text": cleaned[-1].get("source_text", ""),
+        "hook_strategy": "manual_storyboard",
+        "ending_strategy": "manual_storyboard",
+        "coherence_score": 100.0,
+        "visual_continuity_score": min(
+            float(segment.get("visual_score", 80.0) or 80.0) for segment in cleaned),
+        "estimated_duration": round(cursor, 3),
+        "warnings": ["manual_storyboard_override"],
+        "story_plan_score": 100.0,
+        "updated_at": utc_now(),
+    }
+    clips[rank] = entry
+    manifest.update({
+        "clip_count": len(clips),
+        "mode_requested": "manual",
+        "updated_at": utc_now(),
+    })
     manifest["clips"] = [clips[key] for key in sorted(clips)]
     path.write_text(json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8")
     return entry

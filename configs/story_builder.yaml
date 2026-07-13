@@ -1,0 +1,29 @@
+story_builder:
+  default_mode: auto
+  platform_targets:
+    default: 45
+    tiktok: 45
+    reels: 45
+    shorts: 55
+  contiguous:
+    min_duration_seconds: 18
+    min_information_density: 70
+  multi_scene:
+    min_segments: 2
+    max_segments: 4
+    min_coherence_score: 65
+    allow_flash_forward: false
+  quality:
+    max_black_inside_seconds: 0.35
+    min_segment_duration_seconds: 2.0
+    audio_margin_before_seconds: 0.08
+    audio_margin_after_seconds: 0.12
+  weights:
+    narrative_coherence: 0.30
+    information_density: 0.20
+    hook_strength: 0.15
+    visual_continuity: 0.10
+    audio_continuity: 0.08
+    source_popularity: 0.07
+    payoff_strength: 0.10
+    redundancy: 0.20

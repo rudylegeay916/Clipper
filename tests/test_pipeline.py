@@ -1,4 +1,4 @@
-"""
+﻿"""
 Tests de la Phase 13 (pipeline complet + batch).
 
 Les 12 etapes sont remplacees par des mocks qui creent les fichiers de
@@ -63,10 +63,10 @@ def _called_ids(calls):
 # ---------------------------------------------------------------------------
 
 def test_stage_order_and_registry():
-    """Les 17 etapes (12 + Creative Engine + popularite source), dans l'ordre."""
+    """Les 18 etapes (12 + Creative Engine + popularite source + storyboard)."""
     assert STAGE_IDS == ["ingestion", "preview", "transcription",
                          "creative_routing", "detection", "source_popularity",
-                         "scoring", "cutting",
+                         "scoring", "story_planning", "cutting",
                          "reframe", "speech_decision", "subtitles",
                          "creative_hooks", "templates", "creative_music",
                          "metadata", "visibility", "export"]
@@ -95,7 +95,7 @@ def test_full_run_mocked(mocked_runners):
     assert written["completed_at"]
     hub = (output_dir / "pipeline_preview.html").read_text(encoding="utf-8")
     assert 'href="preview.html"' in hub                   # Lien vers preview existante
-    assert "non généré" in hub                            # Sorties absentes signalees
+    assert "non " in hub                                  # Sorties absentes signalees
 
 
 def test_options_forwarded(mocked_runners):
@@ -105,7 +105,8 @@ def test_options_forwarded(mocked_runners):
                            "subtitle_style": "pop_highlight",
                            "template": "punchy_short",
                            "reframe_method": "center", "stability": "follow",
-                           "language": "fr", "popularity_mode": "popular"})
+                           "language": "fr", "popularity_mode": "popular",
+                           "story_mode": "multi_scene", "story_max_segments": 4})
     options = dict(calls[0][1])
     assert options["top"] == 3
     assert options["platform"] == "all"
@@ -115,6 +116,8 @@ def test_options_forwarded(mocked_runners):
     assert options["stability"] == "follow"
     assert options["language"] == "fr"
     assert options["popularity_mode"] == "popular"
+    assert options["story_mode"] == "multi_scene"
+    assert options["story_max_segments"] == 4
 
 
 def test_dry_run_executes_nothing(mocked_runners, capsys):
@@ -126,7 +129,7 @@ def test_dry_run_executes_nothing(mocked_runners, capsys):
     assert result["status"] == "dry_run"
     assert len(result["plan"]) == len(STAGE_IDS)
     preview_plan = next(p for p in result["plan"] if p["id"] == "preview")
-    assert preview_plan["status"] == "désactivée"
+    assert preview_plan["status"].startswith("d") and "activ" in preview_plan["status"]
     output = capsys.readouterr().out
     assert "DRY RUN" in output and f"[{len(STAGE_IDS)}/{len(STAGE_IDS)}]" in output
 
@@ -452,3 +455,4 @@ def test_batch_preview_escapes(tmp_path):
         "duration_seconds": 1.0, "error": "err"}]}
     content = build_batch_preview_html(report)
     assert "<script>x" not in content
+

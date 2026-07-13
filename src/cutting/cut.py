@@ -41,6 +41,7 @@ from pathlib import Path
 
 from src.ingestion.ingest import ingest, slugify
 from src.preview.preview import needs_proxy
+from src.storyboard.assembler import assemble_story_clip
 from src.timeline import write_timeline_manifest
 from src.utils.config import load_config
 from src.utils.ffmpeg import FFmpegError, run_ffmpeg, run_ffprobe
@@ -245,6 +246,17 @@ def _load_manual_timings(output_dir: Path) -> dict[int, dict]:
     return {int(item["rank"]): item for item in data.get("clips", [])}
 
 
+def _load_story_plans(output_dir: Path) -> dict[int, dict]:
+    path = output_dir / "story_plan_manifest.json"
+    if not path.is_file():
+        return {}
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return {}
+    return {int(item["rank"]): item for item in data.get("clips", [])}
+
+
 def _merge_rank_entries(existing: list[dict], updated: list[dict],
                         allowed_ranks: set[int] | None = None) -> list[dict]:
     by_rank = {
@@ -332,6 +344,7 @@ def cut_clips(source: str, force: bool = False, top: int | None = None,
 
     clips_dir.mkdir(parents=True, exist_ok=True)
     manual_timings = _load_manual_timings(output_dir)
+    story_plans = _load_story_plans(output_dir)
 
     # --- Decoupe de chaque candidat ---
     margin_before = clip_limits.get("margin_before", 0.3)
@@ -356,15 +369,30 @@ def cut_clips(source: str, force: bool = False, top: int | None = None,
             "Clip #%d [%.2fs -> %.2fs] (marges incluses) -> %s ...",
             clip_rank, cut_start, cut_end, filename,
         )
-        result = cut_single_clip(
-            video_path, cut_start, cut_end, destination,
-            mode=mode,
-            source_browser_safe=source_browser_safe,
-            keyframe_tolerance=cutting_config.get("keyframe_tolerance", 0.2),
-            encode_crf=cutting_config.get("encode_crf", 20),
-            encode_preset=cutting_config.get("encode_preset", "veryfast"),
-            has_audio=has_audio,
-        )
+        story_plan = story_plans.get(int(clip_rank), {})
+        if (
+            story_plan.get("assembly_mode") == "multi_scene"
+            and len(story_plan.get("source_segments", [])) >= 2
+            and clip_rank not in manual_timings
+        ):
+            result = assemble_story_clip(
+                video_path,
+                story_plan["source_segments"],
+                destination,
+                has_audio=has_audio,
+                encode_crf=cutting_config.get("encode_crf", 20),
+                encode_preset=cutting_config.get("encode_preset", "veryfast"),
+            )
+        else:
+            result = cut_single_clip(
+                video_path, cut_start, cut_end, destination,
+                mode=mode,
+                source_browser_safe=source_browser_safe,
+                keyframe_tolerance=cutting_config.get("keyframe_tolerance", 0.2),
+                encode_crf=cutting_config.get("encode_crf", 20),
+                encode_preset=cutting_config.get("encode_preset", "veryfast"),
+                has_audio=has_audio,
+            )
         logger.info(
             "  -> %s (%s, debut reel %.2fs)",
             filename, result["method"], result["actual_start"],
@@ -385,6 +413,11 @@ def cut_clips(source: str, force: bool = False, top: int | None = None,
             "suggested_title": candidate["suggested_title"],
             "platform_fit": candidate["platform_fit"],
             "reason": candidate["reason"],
+            "assembly_mode": story_plan.get("assembly_mode", "contiguous"),
+            "story_segments": story_plan.get("source_segments", []),
+            "timeline_segments": result.get("timeline_segments"),
+            "story_plan_score": story_plan.get("story_plan_score"),
+            "story_topic": story_plan.get("story_topic"),
         })
 
     # --- Manifest + galerie ---

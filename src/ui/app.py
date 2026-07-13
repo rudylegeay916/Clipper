@@ -97,6 +97,25 @@ def _options_form(ui_config: dict) -> tuple[dict, str]:
         defaults["template"] = st.selectbox(
             "template", ["creative_social", "clean_social", "punchy_short"])
         defaults["music"] = _music_selector(defaults["music"])
+        story_labels = {
+            "Automatique": "auto",
+            "Sequence continue": "contiguous",
+            "Montage multi-scenes": "multi_scene",
+        }
+        current_story_mode = defaults.get("story_mode", "auto")
+        story_label = st.selectbox(
+            "Mode de montage",
+            list(story_labels.keys()),
+            index=list(story_labels.values()).index(
+                current_story_mode if current_story_mode in story_labels.values() else "auto"
+            ),
+        )
+        defaults["story_mode"] = story_labels[story_label]
+        defaults["story_max_segments"] = st.selectbox(
+            "Nombre maximal de segments par clip",
+            [2, 3, 4, 5, 6],
+            index=[2, 3, 4, 5, 6].index(int(defaults.get("story_max_segments", 4))),
+        )
         popularity_labels = jobs.POPULARITY_MODE_LABELS
         current_popularity = defaults.get("popularity_mode", "auto")
         popularity_index = list(popularity_labels.values()).index(
@@ -323,6 +342,22 @@ def render_results(job: dict) -> None:
                 st.write(f"Profil : {clip.get('profile')}")
                 st.write(f"Score creatif : {clip.get('creative_score', '-')}")
                 st.write(f"Score de visibilite : {clip.get('visibility_score', '-')}")
+                st.write(f"Mode de montage : {clip.get('assembly_mode', 'contiguous')}")
+                if clip.get("story_plan_score") is not None:
+                    st.write(f"Score storyboard : {clip.get('story_plan_score')}")
+                if clip.get("story_segments"):
+                    with st.expander("Segments source du montage"):
+                        for segment in clip["story_segments"]:
+                            st.write(
+                                f"{segment.get('role', '-')}: "
+                                f"{segment.get('source_start_seconds', '-')}"
+                                f"s -> {segment.get('source_end_seconds', '-')}s "
+                                f"({segment.get('duration_seconds', '-')}s)"
+                            )
+                            st.caption(segment.get("source_text", ""))
+                            if segment.get("warnings"):
+                                st.warning(", ".join(segment["warnings"]))
+                _storyboard_editor(job, output_dir, clip)
                 if clip.get("popularity_badge"):
                     st.caption(clip["popularity_badge"])
                     if clip.get("popularity_explanation"):
@@ -397,6 +432,96 @@ def render_results(job: dict) -> None:
                 st.write("Decision de sous-titres :", clip.get("subtitle_decision") or "-")
                 if clip.get("warnings"):
                     st.warning("\n".join(str(w) for w in clip["warnings"]))
+
+
+def _storyboard_rows(segments: list[dict]) -> list[dict]:
+    rows = []
+    for index, segment in enumerate(segments, start=1):
+        rows.append({
+            "order": index,
+            "role": segment.get("role", "evidence"),
+            "source_start_seconds": float(segment.get("source_start_seconds", 0.0) or 0.0),
+            "source_end_seconds": float(segment.get("source_end_seconds", 0.0) or 0.0),
+            "source_text": segment.get("source_text", ""),
+        })
+    return rows
+
+
+def _normalize_storyboard_rows(rows) -> list[dict]:
+    if hasattr(rows, "to_dict"):
+        rows = rows.to_dict("records")
+    normalized = []
+    for index, row in enumerate(rows or [], start=1):
+        start = row.get("source_start_seconds", row.get("source_start", 0))
+        end = row.get("source_end_seconds", row.get("source_end", 0))
+        if start in ("", None) or end in ("", None):
+            continue
+        normalized.append({
+            "order": int(row.get("order") or index),
+            "role": row.get("role") or "evidence",
+            "source_start_seconds": float(start),
+            "source_end_seconds": float(end),
+            "source_text": row.get("source_text") or "",
+        })
+    return sorted(normalized, key=lambda item: item["order"])
+
+
+def _storyboard_editor(parent_job: dict, output_dir: Path, clip: dict) -> None:
+    segments = clip.get("story_segments") or []
+    if not segments:
+        return
+    rank = int(clip["rank"])
+    state_key = f"storyboard_rows_{rank}"
+    st.session_state.setdefault(state_key, _storyboard_rows(segments))
+    with st.expander("Editer le storyboard"):
+        st.caption(
+            "Modifiez ordre, role, debut, fin ou texte. "
+            "Ajoutez/supprimez des lignes dans le tableau si besoin."
+        )
+        data_editor = getattr(st, "data_editor", None)
+        if data_editor:
+            edited_rows = data_editor(
+                st.session_state[state_key],
+                num_rows="dynamic",
+                key=f"storyboard_editor_{rank}",
+                use_container_width=True,
+            )
+        else:
+            edited_rows = st.session_state[state_key]
+        rows = _normalize_storyboard_rows(edited_rows)
+        st.session_state[state_key] = rows
+        total_duration = sum(
+            max(0.0, row["source_end_seconds"] - row["source_start_seconds"])
+            for row in rows
+        )
+        st.write(f"Apercu : {len(rows)} segment(s), duree estimee {total_duration:.1f}s")
+        for row in rows:
+            st.caption(
+                f"{row['order']}. {row['role']} | "
+                f"{row['source_start_seconds']:.2f}s -> {row['source_end_seconds']:.2f}s | "
+                f"{row['source_text'][:120]}"
+            )
+        col_save, col_render = st.columns(2)
+        if col_save.button("Sauvegarder ce storyboard", key=f"storyboard_save_{rank}"):
+            try:
+                results.save_manual_storyboard(
+                    output_dir, rank, rows, clip.get("source_duration_seconds"))
+                st.success("Storyboard manuel sauvegarde.")
+            except ValueError as error:
+                st.error(str(error))
+        if col_render.button(
+            "Regenerer uniquement ce clip",
+            key=f"storyboard_rerender_{rank}",
+        ):
+            try:
+                results.save_manual_storyboard(
+                    output_dir, rank, rows, clip.get("source_duration_seconds"))
+                story_job = jobs.create_storyboard_rerender_job(
+                    parent_job, output_dir, rank, parent_job.get("options", {}))
+                jobs.start_hook_rerender_job(story_job)
+                st.rerun()
+            except (ValueError, FileNotFoundError) as error:
+                st.error(str(error))
 
 
 def _hook_editor(parent_job: dict, output_dir: Path, clip: dict) -> None:
